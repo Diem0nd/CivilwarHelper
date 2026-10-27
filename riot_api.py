@@ -1,157 +1,338 @@
 import os
-from collections import Counter
 from urllib.parse import quote
+
 import aiohttp
 
-ACCOUNT_REGION = "asia"
-PLATFORM_REGION = "kr"
+
+ACCOUNT_ROUTING_URL = "https://asia.api.riotgames.com"
+LEAGUE_ROUTING_URL = "https://kr.api.riotgames.com"
+MATCH_ROUTING_URL = "https://asia.api.riotgames.com"
+
+POSITION_NAMES = {
+    "TOP": "Top",
+    "JUNGLE": "Jungle",
+    "MIDDLE": "Mid",
+    "BOTTOM": "Bot",
+    "UTILITY": "Support",
+}
 
 
 class RiotAPIError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
-        self.status = status
-        self.message = message
+        self.status_code = status_code
 
 
-def get_headers() -> dict:
-    api_key = os.getenv("RIOT_API_KEY", "").strip()
-    return {"X-Riot-Token": api_key}
+def get_api_key() -> str:
+    api_key = os.getenv("RIOT_API_KEY")
+
+    if not api_key:
+        raise RiotAPIError(
+            "RIOT_API_KEY is missing from the environment."
+        )
+
+    return api_key
 
 
-async def riot_get(session: aiohttp.ClientSession, url: str):
-    async with session.get(url, headers=get_headers()) as resp:
-        if resp.status == 200:
-            return await resp.json()
-        if resp.status == 404:
-            raise RiotAPIError(404, "라이엇 계정을 찾을 수 없습니다.")
-        if resp.status in (401, 403):
-            raise RiotAPIError(resp.status, "RIOT_API_KEY가 만료되었거나 유효하지 않습니다.")
-        if resp.status == 429:
-            raise RiotAPIError(429, "라이엇 API 요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.")
-        text = await resp.text()
-        raise RiotAPIError(resp.status, f"라이엇 API 오류 ({resp.status}): {text[:120]}")
+def get_headers() -> dict[str, str]:
+    return {
+        "X-Riot-Token": get_api_key(),
+    }
 
 
-async def get_account_by_riot_id(session: aiohttp.ClientSession, game_name: str, tagline: str) -> dict:
-    encoded_name = quote(game_name.strip())
-    encoded_tag = quote(tagline.strip())
-    url = f"https://{ACCOUNT_REGION}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{encoded_name}/{encoded_tag}"
-    return await riot_get(session, url)
+async def _get_json(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    path: str,
+    params: dict | None = None,
+):
+    url = f"{base_url}{path}"
+
+    async with session.get(url, params=params) as response:
+        if response.status == 200:
+            return await response.json(content_type=None)
+
+        if response.status == 401:
+            raise RiotAPIError(
+                "Riot API 키가 유효하지 않거나 만료되었거나 올바르게 로드되지 않았습니다.",
+                response.status,
+            )
+
+        if response.status == 403:
+            raise RiotAPIError(
+                "Riot API key 가 만료되었거나 올바르게 로드되지 않았습니다.",
+                response.status,
+            )
+
+        if response.status == 404:
+            raise RiotAPIError(
+                "Riot 계정 또는 요청한 리그 데이터를 찾을 수 없습니다.",
+                response.status,
+            )
+
+        if response.status == 429:
+            raise RiotAPIError(
+                "Riot API rate limit을 초과했습니다. 나중에 다시 시도하세요.",
+                response.status,
+            )
+
+        raise RiotAPIError(
+            f"The Riot API returned HTTP status {response.status}.",
+            response.status,
+        )
 
 
-async def get_summoner_by_puuid(session: aiohttp.ClientSession, puuid: str) -> dict:
-    url = f"https://{PLATFORM_REGION}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{quote(puuid)}"
-    return await riot_get(session, url)
+async def get_account_by_riot_id(
+    session: aiohttp.ClientSession,
+    game_name: str,
+    tagline: str,
+):
+    encoded_game_name = quote(game_name, safe="")
+    encoded_tagline = quote(tagline, safe="")
+
+    return await _get_json(
+        session=session,
+        base_url=ACCOUNT_ROUTING_URL,
+        path=(
+            "/riot/account/v1/accounts/by-riot-id/"
+            f"{encoded_game_name}/{encoded_tagline}"
+        ),
+    )
 
 
-async def get_ranked_entries(session: aiohttp.ClientSession, summoner_id: str) -> list[dict]:
-    url = f"https://{PLATFORM_REGION}.api.riotgames.com/lol/league/v4/entries/by-summoner/{quote(summoner_id)}"
-    return await riot_get(session, url)
+async def get_summoner_by_puuid(
+    session: aiohttp.ClientSession,
+    puuid: str,
+):
+    encoded_puuid = quote(puuid, safe="")
+
+    return await _get_json(
+        session=session,
+        base_url=LEAGUE_ROUTING_URL,
+        path=f"/lol/summoner/v4/summoners/by-puuid/{encoded_puuid}",
+    )
 
 
-async def get_ranked_entries_by_puuid(session: aiohttp.ClientSession, puuid: str) -> list[dict]:
-    url = f"https://{PLATFORM_REGION}.api.riotgames.com/lol/league/v4/entries/by-puuid/{quote(puuid)}"
-    return await riot_get(session, url)
+async def get_ranked_entries(
+    session: aiohttp.ClientSession,
+    summoner_id: str,
+):
+    encoded_summoner_id = quote(summoner_id, safe="")
 
+    return await _get_json(
+        session=session,
+        base_url=LEAGUE_ROUTING_URL,
+        path=(
+            "/lol/league/v4/entries/by-summoner/"
+            f"{encoded_summoner_id}"
+        ),
+    )
 
-async def get_ranked_entries_for_account(session: aiohttp.ClientSession, puuid: str, summoner_id: str | None = None) -> list[dict]:
+async def get_ranked_entries_by_puuid(
+    session: aiohttp.ClientSession,
+    puuid: str,
+):
+    encoded_puuid = quote(puuid, safe="")
+
+    return await _get_json(
+        session=session,
+        base_url=LEAGUE_ROUTING_URL,
+        path=f"/lol/league/v4/entries/by-puuid/{encoded_puuid}",
+    )
+
+async def get_ranked_entries_for_account(
+    session: aiohttp.ClientSession,
+    puuid: str,
+):
+    """
+    Tries the PUUID-based ranked endpoint first.
+
+    If that endpoint is unavailable, falls back to the older
+    summoner-ID-based method.
+    """
     try:
-        return await get_ranked_entries_by_puuid(session, puuid)
-    except RiotAPIError:
-        if summoner_id:
-            return await get_ranked_entries(session, summoner_id)
-        return []
+        return await get_ranked_entries_by_puuid(
+            session=session,
+            puuid=puuid,
+        )
 
+    except RiotAPIError as error:
+        if error.status_code != 404:
+            raise
+
+        # Fallback for APIs or accounts where the PUUID endpoint
+        # is unavailable.
+        summoner = await get_summoner_by_puuid(
+            session=session,
+            puuid=puuid,
+        )
+
+        summoner_id = summoner.get("id")
+
+        if not summoner_id:
+            returned_keys = ", ".join(summoner.keys())
+
+            raise RiotAPIError(
+                (
+                    "The Riot summoner response did not contain a "
+                    f"summoner ID. Returned fields: {returned_keys}"
+                )
+            )
+
+        return await get_ranked_entries(
+            session=session,
+            summoner_id=summoner_id,
+        )
 
 async def get_match_ids(
     session: aiohttp.ClientSession,
     puuid: str,
-    queue_id: int | None = None,
+    queue_id: int,
     count: int = 5,
-) -> list[str]:
-    url = f"https://{ACCOUNT_REGION}.api.riotgames.com/lol/match/v5/matches/by-puuid/{quote(puuid)}/ids?start=0&count={count}"
-    if queue_id is not None:
-        url += f"&queue={queue_id}"
-    return await riot_get(session, url)
+):
+    encoded_puuid = quote(puuid, safe="")
+
+    return await _get_json(
+        session=session,
+        base_url=MATCH_ROUTING_URL,
+        path=f"/lol/match/v5/matches/by-puuid/{encoded_puuid}/ids",
+        params={
+            "queue": queue_id,
+            "start": 0,
+            "count": count,
+        },
+    )
 
 
-async def get_match(session: aiohttp.ClientSession, match_id: str) -> dict:
-    url = f"https://{ACCOUNT_REGION}.api.riotgames.com/lol/match/v5/matches/{quote(match_id)}"
-    return await riot_get(session, url)
+async def get_match(
+    session: aiohttp.ClientSession,
+    match_id: str,
+):
+    encoded_match_id = quote(match_id, safe="")
+
+    return await _get_json(
+        session=session,
+        base_url=MATCH_ROUTING_URL,
+        path=f"/lol/match/v5/matches/{encoded_match_id}",
+    )
 
 
 def format_rank(entry: dict | None) -> str:
-    if not entry:
+    if entry is None:
         return "Unranked"
-    tier = str(entry.get("tier", "")).strip().title()
-    rank = str(entry.get("rank", "")).strip().upper()
-    lp = entry.get("leaguePoints", 0)
-    if not tier:
-        return "Unranked"
-    if tier.upper() in ("MASTER", "GRANDMASTER", "CHALLENGER"):
-        return f"{tier} ({lp} LP)"
-    return f"{tier} {rank} ({lp} LP)"
+
+    tier = entry.get("tier", "Unknown").title()
+    division = entry.get("rank", "")
+
+    if division:
+        return f"{tier} {division}"
+
+    return tier
 
 
-async def get_primary_position(session: aiohttp.ClientSession, puuid: str) -> str:
-    role_map = {
-        "TOP": "TOP",
-        "JUNGLE": "JUNGLE",
-        "MIDDLE": "MID",
-        "BOTTOM": "ADC",
-        "UTILITY": "SUPPORT",
-    }
-    try:
-        match_ids = await get_match_ids(session, puuid, count=10)
-    except Exception:
-        return "ALL"
+async def get_primary_position(
+    session: aiohttp.ClientSession,
+    puuid: str,
+) -> str:
+    position_counts: dict[str, int] = {}
 
-    positions: list[str] = []
-    for mid in match_ids[:5]:
-        try:
-            m_data = await get_match(session, mid)
-            participants = m_data.get("info", {}).get("participants", [])
-            for p in participants:
-                if p.get("puuid") == puuid:
-                    raw_pos = str(p.get("teamPosition") or p.get("individualPosition") or "").upper()
-                    if raw_pos in role_map:
-                        positions.append(role_map[raw_pos])
-                    break
-        except Exception:
-            continue
+    # 420 = Ranked Solo/Duo
+    # 440 = Ranked Flex
+    for queue_id in (420, 440):
+        match_ids = await get_match_ids(
+            session=session,
+            puuid=puuid,
+            queue_id=queue_id,
+            count=5,
+        )
 
-    if not positions:
-        return "ALL"
-    return Counter(positions).most_common(1)[0][0]
+        for match_id in match_ids:
+            match = await get_match(
+                session=session,
+                match_id=match_id,
+            )
+
+            participants = match.get("info", {}).get(
+                "participants",
+                [],
+            )
+
+            participant = next(
+                (
+                    item
+                    for item in participants
+                    if item.get("puuid") == puuid
+                ),
+                None,
+            )
+
+            if participant is None:
+                continue
+
+            raw_position = participant.get("teamPosition")
+
+            if raw_position not in POSITION_NAMES:
+                continue
+
+            position_counts[raw_position] = (
+                position_counts.get(raw_position, 0) + 1
+            )
+
+    if not position_counts:
+        return "Unknown"
+
+    primary_position = max(
+        position_counts,
+        key=position_counts.get,
+    )
+
+    return POSITION_NAMES[primary_position]
 
 
-async def fetch_lol_profile_data(session: aiohttp.ClientSession, game_name: str, tagline: str) -> dict:
-    account = await get_account_by_riot_id(session, game_name, tagline)
+async def fetch_lol_profile_data(
+    session: aiohttp.ClientSession,
+    game_name: str,
+    tagline: str,
+):
+    account = await get_account_by_riot_id(
+        session=session,
+        game_name=game_name,
+        tagline=tagline,
+    )
+
     puuid = account["puuid"]
-    canonical_name = account.get("gameName", game_name)
-    canonical_tag = account.get("tagLine", tagline)
 
-    summoner_id = None
-    try:
-        summoner = await get_summoner_by_puuid(session, puuid)
-        summoner_id = summoner.get("id")
-    except Exception:
-        pass
+    ranked_entries = await get_ranked_entries_for_account(
+        session=session,
+        puuid=puuid,
+    )
 
-    entries = await get_ranked_entries_for_account(session, puuid, summoner_id)
-    solo_entry = next((e for e in entries if e.get("queueType") == "RANKED_SOLO_5x5"), None)
-    flex_entry = next((e for e in entries if e.get("queueType") == "RANKED_FLEX_SR"), None)
+    solo_entry = next(
+        (
+            entry
+            for entry in ranked_entries
+            if entry.get("queueType") == "RANKED_SOLO_5x5"
+        ),
+        None,
+    )
 
-    solo_tier = format_rank(solo_entry)
-    flex_tier = format_rank(flex_entry)
-    main_pos = await get_primary_position(session, puuid)
+    flex_entry = next(
+        (
+            entry
+            for entry in ranked_entries
+            if entry.get("queueType") == "RANKED_FLEX_SR"
+        ),
+        None,
+    )
+
+    primary_position = await get_primary_position(
+        session=session,
+        puuid=puuid,
+    )
 
     return {
         "puuid": puuid,
-        "game_name": canonical_name,
-        "tagline": canonical_tag,
-        "solo_tier": solo_tier,
-        "flex_tier": flex_tier,
-        "main_position": main_pos,
+        "solo_tier": format_rank(solo_entry),
+        "flex_tier": format_rank(flex_entry),
+        "main_position": primary_position,
     }

@@ -1,27 +1,20 @@
-# 1. 보안 정보 (절대 업로드 금지: 디스코드 토큰, 라이엇 API 키)
+# 1. 환경변수 및 비밀키 파일 (절대 업로드 금지)
 .env
 .env.*
+*.env
 
-# 2. 파이썬 가상환경
-.venv/
-venv/
-env/
+# 2. 데이터베이스 파일 (유저 개인정보 보호)
+*.db
+*.sqlite
+*.sqlite3
 
-# 3. 파이썬 캐시 파일 (모듈을 여러 파일로 나누면서 생기는 캐시들)
+# 3. 파이썬 캐시 및 가상환경 폴더
 __pycache__/
 *.py[cod]
-*$py.class
+venv/
+.venv/
+env/
 
-# 4. 로컬 데이터베이스 파일 (유저 프로필 및 내전 기록 보호)
-data/
-*.db
-*.sqlite3
-*.db-journal
-*.db-wal
-*.db-shm
-
-# 5. 에디터 및 운영체제 임시 파일
+# 4. 에디터 설정 파일
 .vscode/
 .idea/
-.DS_Store
-Thumbs.db

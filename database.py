@@ -1,16 +1,21 @@
-import json
-import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
+import json
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "civilwarhelper.db"
+DATABASE_PATH = DATA_DIR / "civilwarhelper.db"
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
+
+    connection = sqlite3.connect(DATABASE_PATH)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+
     return connection
 
 
@@ -18,48 +23,59 @@ def _ensure_column(
     connection: sqlite3.Connection,
     table_name: str,
     column_name: str,
-    column_definition: str,
-) -> None:
-    cursor = connection.cursor()
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    existing_columns = {row["name"] for row in cursor.fetchall()}
+    column_type: str,
+):
+    rows = connection.execute(
+        f"PRAGMA table_info({table_name})"
+    ).fetchall()
+    existing_columns = {row["name"] for row in rows}
 
     if column_name not in existing_columns:
-        cursor.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
         )
 
 
-def initialize_database() -> None:
+def initialize_database():
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
+        # 예전 단일 내전 제한 인덱스가 남아 있다면 제거
+        connection.execute(
+            "DROP INDEX IF EXISTS one_open_inhouse_per_guild"
+        )
 
         # 1. 프로필 테이블
-        cursor.execute(
+        connection.execute(
             """
             CREATE TABLE IF NOT EXISTS profiles (
                 guild_id INTEGER NOT NULL,
                 discord_user_id INTEGER NOT NULL,
-                discord_nickname TEXT NOT NULL,
                 game TEXT NOT NULL,
+
+                discord_nickname TEXT NOT NULL,
                 riot_game_name TEXT NOT NULL,
                 riot_tagline TEXT NOT NULL,
                 server_location TEXT NOT NULL,
-                solo_tier TEXT NOT NULL DEFAULT 'Not retrieved yet',
-                flex_tier TEXT NOT NULL DEFAULT 'Not retrieved yet',
-                competitive_tier TEXT NOT NULL DEFAULT 'Not retrieved yet',
-                main_position TEXT NOT NULL DEFAULT 'Unknown',
-                sub_position TEXT DEFAULT NULL,
-                custom_tier TEXT DEFAULT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+                puuid TEXT,
+
+                solo_tier TEXT,
+                flex_tier TEXT,
+                competitive_tier TEXT,
+                main_position TEXT,
+
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_api_sync TEXT,
+
                 PRIMARY KEY (guild_id, discord_user_id, game)
             )
             """
         )
 
-        # 2. 내전 세션 테이블
-        cursor.execute(
+        # 2. 내전(civilwar) 세션 테이블
+        connection.execute(
             """
             CREATE TABLE IF NOT EXISTS inhouse_sessions (
                 session_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,38 +83,71 @@ def initialize_database() -> None:
                 civilwar_number INTEGER NOT NULL,
                 game TEXT NOT NULL,
                 organizer_user_id INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                channel_id INTEGER,
-                message_id INTEGER,
-                balance_settings TEXT,
-                team_groups_json TEXT DEFAULT '[]',
-                fearless_data TEXT DEFAULT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (guild_id, civilwar_number)
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
 
+        # 이전 버전 테이블과의 호환성을 위해 누락된 컬럼 자동 보정
+        _ensure_column(connection, "inhouse_sessions", "updated_at", "TEXT")
+
         # 3. 내전 참가자 테이블
-        cursor.execute(
+        connection.execute(
             """
             CREATE TABLE IF NOT EXISTS inhouse_participants (
                 session_id INTEGER NOT NULL,
-                guild_id INTEGER NOT NULL,
+                guild_id INTEGER,
                 discord_user_id INTEGER NOT NULL,
+                discord_nickname TEXT,
+                riot_game_name TEXT,
+                riot_tagline TEXT,
+                server_location TEXT,
+                solo_tier TEXT,
+                flex_tier TEXT,
+                competitive_tier TEXT,
+                main_position TEXT,
                 preferred_position TEXT,
-                sub_position TEXT DEFAULT NULL,
-                custom_tier TEXT DEFAULT NULL,
                 assigned_team TEXT,
-                assigned_position TEXT,
-                joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (session_id, discord_user_id)
+                joined_at TEXT NOT NULL,
+
+                PRIMARY KEY (session_id, discord_user_id),
+
+                FOREIGN KEY (session_id)
+                    REFERENCES inhouse_sessions(session_id)
+                    ON DELETE CASCADE
             )
             """
         )
 
-        # 4. 글로벌 개인 내전 전적 테이블 (서버 무관 누적)
-        cursor.execute(
+        _ensure_column(connection, "inhouse_participants", "guild_id", "INTEGER")
+        _ensure_column(connection, "inhouse_participants", "discord_nickname", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "riot_game_name", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "riot_tagline", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "server_location", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "solo_tier", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "flex_tier", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "custom_tier", "TEXT")       
+        _ensure_column(connection, "inhouse_participants", "competitive_tier", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "main_position", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "preferred_position", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "assigned_team", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "assigned_position", "TEXT")
+        _ensure_column(connection, "inhouse_participants", "sub_position", "TEXT")
+        _ensure_column(connection, "inhouse_sessions", "lobby_channel_id", "INTEGER")
+        _ensure_column(connection, "inhouse_sessions", "lobby_message_id", "INTEGER")
+        _ensure_column(connection, "inhouse_sessions", "balance_settings", "TEXT")
+        _ensure_column(connection, "inhouse_sessions", "fearless_enabled", "INTEGER DEFAULT 0")
+        _ensure_column(connection, "inhouse_sessions", "current_set", "INTEGER DEFAULT 1")
+        _ensure_column(connection, "inhouse_sessions", "fearless_bans_json", "TEXT DEFAULT '{}'")
+        _ensure_column(connection, "inhouse_sessions", "set_results_json", "TEXT DEFAULT '{}'")
+        _ensure_column(connection, "inhouse_sessions", "balance_settings", "TEXT")
+        _ensure_column(connection, "profiles", "custom_tier", "TEXT")
+        _ensure_column(connection, "profiles", "sub_position", "TEXT")
+        # 👇 [여기에 아래 CREATE TABLE 블록을 추가하세요!]
+        # 4. 글로벌 개인 내전 전적 테이블 (서버 무관, discord_user_id + game 기준 영구 보존)
+        connection.execute(
             """
             CREATE TABLE IF NOT EXISTS global_user_inhouse_stats (
                 discord_user_id INTEGER NOT NULL,
@@ -111,420 +160,254 @@ def initialize_database() -> None:
                 even_losses INTEGER NOT NULL DEFAULT 0,
                 lower_wins INTEGER NOT NULL DEFAULT 0,
                 lower_losses INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL,
                 PRIMARY KEY (discord_user_id, game)
             )
             """
         )
 
-        # 기존 DB 호환을 위한 컬럼 자동 보강
-        _ensure_column(connection, "profiles", "custom_tier", "TEXT DEFAULT NULL")
-        _ensure_column(connection, "profiles", "sub_position", "TEXT DEFAULT NULL")
-
-        _ensure_column(connection, "inhouse_sessions", "channel_id", "INTEGER")
-        _ensure_column(connection, "inhouse_sessions", "message_id", "INTEGER")
-        _ensure_column(connection, "inhouse_sessions", "balance_settings", "TEXT")
-        _ensure_column(connection, "inhouse_sessions", "team_groups_json", "TEXT DEFAULT '[]'")
-        _ensure_column(connection, "inhouse_sessions", "fearless_data", "TEXT DEFAULT NULL")
-
-        _ensure_column(connection, "inhouse_participants", "preferred_position", "TEXT")
-        _ensure_column(connection, "inhouse_participants", "sub_position", "TEXT DEFAULT NULL")
-        _ensure_column(connection, "inhouse_participants", "custom_tier", "TEXT DEFAULT NULL")
-        _ensure_column(connection, "inhouse_participants", "assigned_team", "TEXT")
-        _ensure_column(connection, "inhouse_participants", "assigned_position", "TEXT")
-
         connection.commit()
+
     finally:
         connection.close()
 
 
-# =====================================================================
-# 프로필 등록 / 조회 / 수정 / 삭제
-# =====================================================================
+# =========================================================
+# 프로필 관련 함수 (2~3단계)
+# =========================================================
 
-def upsert_profile(
+def save_profile(
     guild_id: int,
     discord_user_id: int,
-    discord_nickname: str,
     game: str,
+    discord_nickname: str,
     riot_game_name: str,
     riot_tagline: str,
     server_location: str,
-    solo_tier: str = "Not retrieved yet",
-    flex_tier: str = "Not retrieved yet",
-    competitive_tier: str = "Not retrieved yet",
-    main_position: str = "Unknown",
-) -> str:
+):
     connection = get_connection()
-    try:
-        cursor = connection.cursor()
 
-        cursor.execute(
+    try:
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        existing_profile = connection.execute(
             """
-            SELECT 1
+            SELECT
+                riot_game_name,
+                riot_tagline,
+                server_location
             FROM profiles
-            WHERE guild_id = ? AND discord_user_id = ? AND game = ?
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
             """,
             (guild_id, discord_user_id, game),
-        )
-        exists = cursor.fetchone() is not None
+        ).fetchone()
 
-        if exists:
-            cursor.execute(
+        account_is_unchanged = (
+            existing_profile is not None
+            and existing_profile["riot_game_name"] == riot_game_name
+            and existing_profile["riot_tagline"] == riot_tagline
+            and existing_profile["server_location"] == server_location
+        )
+
+        if existing_profile is None:
+            connection.execute(
+                """
+                INSERT INTO profiles (
+                    guild_id,
+                    discord_user_id,
+                    game,
+                    discord_nickname,
+                    riot_game_name,
+                    riot_tagline,
+                    server_location,
+                    puuid,
+                    solo_tier,
+                    flex_tier,
+                    competitive_tier,
+                    main_position,
+                    created_at,
+                    updated_at,
+                    last_api_sync
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL)
+                """,
+                (
+                    guild_id,
+                    discord_user_id,
+                    game,
+                    discord_nickname,
+                    riot_game_name,
+                    riot_tagline,
+                    server_location,
+                    current_time,
+                    current_time,
+                ),
+            )
+            was_updated = False
+
+        elif account_is_unchanged:
+            connection.execute(
+                """
+                UPDATE profiles
+                SET discord_nickname = ?,
+                    updated_at = ?
+                WHERE guild_id = ?
+                  AND discord_user_id = ?
+                  AND game = ?
+                """,
+                (
+                    discord_nickname,
+                    current_time,
+                    guild_id,
+                    discord_user_id,
+                    game,
+                ),
+            )
+            was_updated = True
+
+        else:
+            connection.execute(
                 """
                 UPDATE profiles
                 SET discord_nickname = ?,
                     riot_game_name = ?,
                     riot_tagline = ?,
                     server_location = ?,
-                    solo_tier = ?,
-                    flex_tier = ?,
-                    competitive_tier = ?,
-                    main_position = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
+                    puuid = NULL,
+                    solo_tier = NULL,
+                    flex_tier = NULL,
+                    competitive_tier = NULL,
+                    main_position = NULL,
+                    updated_at = ?,
+                    last_api_sync = NULL
+                WHERE guild_id = ?
+                  AND discord_user_id = ?
+                  AND game = ?
                 """,
                 (
                     discord_nickname,
                     riot_game_name,
                     riot_tagline,
                     server_location,
-                    solo_tier,
-                    flex_tier,
-                    competitive_tier,
-                    main_position,
+                    current_time,
                     guild_id,
                     discord_user_id,
                     game,
                 ),
             )
-            action = "updated"
-        else:
-            cursor.execute(
-                """
-                INSERT INTO profiles (
-                    guild_id,
-                    discord_user_id,
-                    discord_nickname,
-                    game,
-                    riot_game_name,
-                    riot_tagline,
-                    server_location,
-                    solo_tier,
-                    flex_tier,
-                    competitive_tier,
-                    main_position
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    guild_id,
-                    discord_user_id,
-                    discord_nickname,
-                    game,
-                    riot_game_name,
-                    riot_tagline,
-                    server_location,
-                    solo_tier,
-                    flex_tier,
-                    competitive_tier,
-                    main_position,
-                ),
-            )
-            action = "created"
+            was_updated = True
 
         connection.commit()
-        return action
+        return was_updated
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
 
+def ensure_profile_custom_columns(connection: sqlite3.Connection) -> None:
+    _ensure_column(connection, "profiles", "custom_tier", "TEXT")
+    _ensure_column(connection, "profiles", "sub_position", "TEXT")
+    _ensure_column(connection, "inhouse_participants", "custom_tier", "TEXT")
 
-def get_profiles_by_game(guild_id: int, game: str) -> list[dict]:
+
+def get_profiles(guild_id: int, game: str):
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        ensure_profile_custom_columns(connection)
+        profiles = connection.execute(
             """
             SELECT
                 guild_id,
                 discord_user_id,
-                discord_nickname,
                 game,
+                discord_nickname,
                 riot_game_name,
                 riot_tagline,
                 server_location,
+                puuid,
                 solo_tier,
                 flex_tier,
                 competitive_tier,
+                custom_tier,
                 main_position,
                 sub_position,
-                custom_tier,
-                updated_at
+                created_at,
+                updated_at,
+                last_api_sync
             FROM profiles
-            WHERE guild_id = ? AND game = ?
-            ORDER BY LOWER(discord_nickname) ASC, discord_user_id ASC
+            WHERE guild_id = ?
+              AND game = ?
+            ORDER BY discord_nickname COLLATE NOCASE ASC,
+                     riot_game_name COLLATE NOCASE ASC,
+                     discord_user_id ASC
             """,
             (guild_id, game),
-        )
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        ).fetchall()
+
+        return [dict(profile) for profile in profiles]
+
     finally:
         connection.close()
 
 
-def get_single_profile(
+def update_profile_api_data(
     guild_id: int,
     discord_user_id: int,
     game: str,
-) -> dict | None:
+    puuid: str | None = None,
+    solo_tier: str | None = None,
+    flex_tier: str | None = None,
+    competitive_tier: str | None = None,
+    main_position: str | None = None,
+):
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        connection.execute(
             """
-            SELECT
-                guild_id,
-                discord_user_id,
-                discord_nickname,
-                game,
-                riot_game_name,
-                riot_tagline,
-                server_location,
+            UPDATE profiles
+            SET puuid = ?,
+                solo_tier = ?,
+                flex_tier = ?,
+                competitive_tier = ?,
+                main_position = ?,
+                last_api_sync = ?,
+                updated_at = ?
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
+            """,
+            (
+                puuid,
                 solo_tier,
                 flex_tier,
                 competitive_tier,
                 main_position,
-                sub_position,
-                custom_tier,
-                updated_at
-            FROM profiles
-            WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-            """,
-            (guild_id, discord_user_id, game),
-        )
-        row = cursor.fetchone()
-        return dict(row) if row is not None else None
-    finally:
-        connection.close()
-
-
-def get_user_profile(
-    guild_id: int,
-    discord_user_id: int,
-    game: str,
-) -> dict | None:
-    return get_single_profile(guild_id, discord_user_id, game)
-
-
-def update_lol_profile_stats(
-    guild_id: int,
-    discord_user_id: int,
-    riot_game_name: str,
-    riot_tagline: str,
-    solo_tier: str,
-    flex_tier: str,
-    main_position: str,
-) -> None:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            UPDATE profiles
-            SET riot_game_name = ?,
-                riot_tagline = ?,
-                solo_tier = ?,
-                flex_tier = ?,
-                main_position = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE guild_id = ? AND discord_user_id = ? AND game = 'lol'
-            """,
-            (
-                riot_game_name,
-                riot_tagline,
-                solo_tier,
-                flex_tier,
-                main_position,
+                current_time,
+                current_time,
                 guild_id,
                 discord_user_id,
+                game,
             ),
         )
+
         connection.commit()
+
     finally:
         connection.close()
 
 
-def delete_user_profile(
-    guild_id: int,
-    discord_user_id: int,
-    game: str | None = None,
-) -> int:
-    """특정 유저의 등록된 프로필(register 정보)을 DB에서 삭제하고 삭제된 행 수를 반환합니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        if game and game in ("lol", "valorant"):
-            cursor.execute(
-                """
-                DELETE FROM profiles
-                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-                """,
-                (guild_id, discord_user_id, game),
-            )
-        else:
-            cursor.execute(
-                """
-                DELETE FROM profiles
-                WHERE guild_id = ? AND discord_user_id = ?
-                """,
-                (guild_id, discord_user_id),
-            )
-        deleted_count = cursor.rowcount
-        connection.commit()
-        return deleted_count
-    finally:
-        connection.close()
-
-
-def can_user_edit_profile(
-    guild_id: int,
-    actor_user_id: int,
-    target_user_id: int,
-    game: str,
-) -> tuple[bool, str]:
-    """
-    프로필 수정 권한 확인:
-    1) 본인인 경우 허용
-    2) 현재 같은 게임의 활성 내전에 두 사람이 함께 속해 있는 경우(주최자 또는 같은 내전 참가자) 허용
-    """
-    if actor_user_id == target_user_id:
-        return True, "본인 프로필"
-
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT s.session_id, s.civilwar_number, s.organizer_user_id
-            FROM inhouse_sessions s
-            JOIN inhouse_participants p_target
-              ON s.session_id = p_target.session_id
-             AND p_target.discord_user_id = ?
-            LEFT JOIN inhouse_participants p_actor
-              ON s.session_id = p_actor.session_id
-             AND p_actor.discord_user_id = ?
-            WHERE s.guild_id = ?
-              AND s.game = ?
-              AND s.status NOT IN ('closed', 'ended', 'cancelled')
-              AND (s.organizer_user_id = ? OR p_actor.discord_user_id IS NOT NULL)
-            LIMIT 1
-            """,
-            (target_user_id, actor_user_id, guild_id, game, actor_user_id),
-        )
-        row = cursor.fetchone()
-        if row is not None:
-            return True, f"civilwar #{row['civilwar_number']} 함께 참여 중"
-
-        return (
-            False,
-            "본인이거나 현재 같은 내전에 참여 중인 멤버(또는 주최자)만 프로필 설정을 변경할 수 있습니다.",
-        )
-    finally:
-        connection.close()
-
-
-_UNSET = object()
-
-
-def update_user_profile_custom_settings(
-    guild_id: int,
-    discord_user_id: int,
-    game: str,
-    custom_tier: str | None | object = _UNSET,
-    main_position: str | object = _UNSET,
-    sub_position: str | None | object = _UNSET,
-) -> dict | None:
-    """프로필의 체감 티어 / 주 포지션 / 부 포지션을 업데이트하고 진행 중인 내전 참가자 정보에도 동기화합니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-
-        updates: list[str] = []
-        params: list[object] = []
-
-        if custom_tier is not _UNSET:
-            updates.append("custom_tier = ?")
-            params.append(custom_tier)
-        if main_position is not _UNSET:
-            updates.append("main_position = ?")
-            params.append(main_position)
-        if sub_position is not _UNSET:
-            updates.append("sub_position = ?")
-            params.append(sub_position)
-
-        if updates:
-            updates.append("updated_at = CURRENT_TIMESTAMP")
-            params.extend([guild_id, discord_user_id, game])
-            cursor.execute(
-                f"""
-                UPDATE profiles
-                SET {', '.join(updates)}
-                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-                """,
-                tuple(params),
-            )
-
-            # 현재 진행 중인 동일 게임 내전 참가자 테이블에도 즉시 반영
-            part_updates: list[str] = []
-            part_params: list[object] = []
-            if custom_tier is not _UNSET:
-                part_updates.append("custom_tier = ?")
-                part_params.append(custom_tier)
-            if main_position is not _UNSET:
-                part_updates.append("preferred_position = ?")
-                part_params.append(main_position)
-            if sub_position is not _UNSET:
-                part_updates.append("sub_position = ?")
-                part_params.append(sub_position)
-
-            if part_updates:
-                part_params.extend([guild_id, discord_user_id, guild_id, game])
-                cursor.execute(
-                    f"""
-                    UPDATE inhouse_participants
-                    SET {', '.join(part_updates)}
-                    WHERE guild_id = ?
-                      AND discord_user_id = ?
-                      AND session_id IN (
-                          SELECT session_id
-                          FROM inhouse_sessions
-                          WHERE guild_id = ?
-                            AND game = ?
-                            AND status NOT IN ('closed', 'ended', 'cancelled')
-                      )
-                    """,
-                    tuple(part_params),
-                )
-
-            connection.commit()
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM profiles
-            WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-            """,
-            (guild_id, discord_user_id, game),
-        )
-        row = cursor.fetchone()
-        return dict(row) if row is not None else None
-    finally:
-        connection.close()
-
-
-# =====================================================================
-# 내전 세션 생성 / 조회 / 관리
-# =====================================================================
+# =========================================================
+# 내전(Civilwar) 관련 함수 (4단계)
+# =========================================================
 
 def create_inhouse_session(
     guild_id: int,
@@ -532,159 +415,116 @@ def create_inhouse_session(
     organizer_user_id: int,
 ) -> dict:
     connection = get_connection()
-    try:
-        cursor = connection.cursor()
 
-        cursor.execute(
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        row = connection.execute(
             """
-            SELECT COALESCE(MAX(civilwar_number), 0) + 1 AS next_num
+            SELECT COALESCE(MAX(civilwar_number), 0) AS max_num
             FROM inhouse_sessions
             WHERE guild_id = ?
+              AND status = 'open'
             """,
             (guild_id,),
-        )
-        next_num = cursor.fetchone()["next_num"]
+        ).fetchone()
 
-        cursor.execute(
+        next_number = (row["max_num"] if row else 0) + 1
+
+        cursor = connection.execute(
             """
             INSERT INTO inhouse_sessions (
                 guild_id,
                 civilwar_number,
                 game,
                 organizer_user_id,
-                status
+                status,
+                created_at,
+                updated_at
             )
-            VALUES (?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, 'open', ?, ?)
             """,
-            (guild_id, next_num, game, organizer_user_id),
+            (
+                guild_id,
+                next_number,
+                game,
+                organizer_user_id,
+                current_time,
+                current_time,
+            ),
         )
+
         session_id = cursor.lastrowid
         connection.commit()
 
         return {
             "session_id": session_id,
             "guild_id": guild_id,
-            "civilwar_number": next_num,
+            "civilwar_number": next_number,
             "game": game,
             "organizer_user_id": organizer_user_id,
-            "status": "active",
-            "channel_id": None,
-            "message_id": None,
-            "balance_settings": None,
+            "status": "open",
         }
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
 
 
-def save_inhouse_lobby_message(
+def get_active_inhouse_sessions(
     guild_id: int,
-    session_id: int,
-    channel_id: int,
-    message_id: int,
-) -> None:
+    game: str | None = None,
+) -> list[dict]:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            UPDATE inhouse_sessions
-            SET channel_id = ?, message_id = ?
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (channel_id, message_id, guild_id, session_id),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+        if game:
+            rows = connection.execute(
+                """
+                SELECT
+                    s.*,
+                    COUNT(p.discord_user_id) AS participant_count
+                FROM inhouse_sessions s
+                LEFT JOIN inhouse_participants p
+                    ON s.session_id = p.session_id
+                WHERE s.guild_id = ?
+                  AND s.status = 'open'
+                  AND s.game = ?
+                GROUP BY s.session_id
+                ORDER BY s.civilwar_number ASC
+                """,
+                (guild_id, game),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT
+                    s.*,
+                    COUNT(p.discord_user_id) AS participant_count
+                FROM inhouse_sessions s
+                LEFT JOIN inhouse_participants p
+                    ON s.session_id = p.session_id
+                WHERE s.guild_id = ?
+                  AND s.status = 'open'
+                GROUP BY s.session_id
+                ORDER BY s.civilwar_number ASC
+                """,
+                (guild_id,),
+            ).fetchall()
 
-
-def set_session_lobby_message(
-    guild_id: int,
-    session_id: int,
-    channel_id: int,
-    message_id: int,
-) -> None:
-    save_inhouse_lobby_message(guild_id, session_id, channel_id, message_id)
-
-
-def get_active_inhouse_sessions(guild_id: int) -> list[dict]:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT
-                session_id,
-                guild_id,
-                civilwar_number,
-                game,
-                organizer_user_id,
-                status,
-                channel_id,
-                message_id,
-                balance_settings,
-                created_at
-            FROM inhouse_sessions
-            WHERE guild_id = ? AND status = 'active'
-            ORDER BY civilwar_number ASC
-            """,
-            (guild_id,),
-        )
-        rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
     finally:
         connection.close()
 
 
-def list_open_inhouse_sessions(guild_id: int) -> list[dict]:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT *
-            FROM inhouse_sessions
-            WHERE guild_id = ?
-              AND (status IS NULL OR status NOT IN ('closed', 'ended', 'cancelled'))
-            ORDER BY session_id DESC
-            """,
-            (guild_id,),
-        )
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        connection.close()
-
-
-def get_inhouse_session_by_number(
-    guild_id: int,
-    civilwar_number: int,
-) -> dict | None:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT
-                session_id,
-                guild_id,
-                civilwar_number,
-                game,
-                organizer_user_id,
-                status,
-                channel_id,
-                message_id,
-                balance_settings,
-                created_at
-            FROM inhouse_sessions
-            WHERE guild_id = ? AND civilwar_number = ? AND status = 'active'
-            """,
-            (guild_id, civilwar_number),
-        )
-        row = cursor.fetchone()
-        return dict(row) if row is not None else None
-    finally:
-        connection.close()
+# 별칭(Alias) 지원: get_open_inhouse_sessions로 호출해도 동일하게 작동
+get_open_inhouse_sessions = get_active_inhouse_sessions
 
 
 def get_inhouse_session_by_id(
@@ -692,62 +532,53 @@ def get_inhouse_session_by_id(
     session_id: int,
 ) -> dict | None:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        row = connection.execute(
             """
-            SELECT
-                session_id,
-                guild_id,
-                civilwar_number,
-                game,
-                organizer_user_id,
-                status,
-                channel_id,
-                message_id,
-                balance_settings,
-                created_at
+            SELECT *
             FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ? AND status = 'active'
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
             """,
             (guild_id, session_id),
-        )
-        row = cursor.fetchone()
-        return dict(row) if row is not None else None
+        ).fetchone()
+
+        return dict(row) if row else None
+
     finally:
         connection.close()
 
 
-def get_inhouse_session(guild_id: int, session_id: int) -> dict | None:
-    return get_inhouse_session_by_id(guild_id, session_id)
+get_open_inhouse_session_by_id = get_inhouse_session_by_id
 
 
-def delete_inhouse_session(guild_id: int, session_id: int) -> bool:
+def get_inhouse_session_by_number(
+    guild_id: int,
+    civilwar_number: int,
+) -> dict | None:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-
-        cursor.execute(
+        row = connection.execute(
             """
-            DELETE FROM inhouse_participants
-            WHERE guild_id = ? AND session_id = ?
+            SELECT *
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND civilwar_number = ?
+              AND status = 'open'
             """,
-            (guild_id, session_id),
-        )
+            (guild_id, civilwar_number),
+        ).fetchone()
 
-        cursor.execute(
-            """
-            DELETE FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (guild_id, session_id),
-        )
+        return dict(row) if row else None
 
-        deleted = cursor.rowcount > 0
-        connection.commit()
-        return deleted
     finally:
         connection.close()
+
+
+get_open_inhouse_session_by_number = get_inhouse_session_by_number
 
 
 def transfer_inhouse_organizer(
@@ -756,26 +587,33 @@ def transfer_inhouse_organizer(
     new_organizer_user_id: int,
 ) -> bool:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        cursor = connection.execute(
             """
             UPDATE inhouse_sessions
-            SET organizer_user_id = ?
-            WHERE guild_id = ? AND session_id = ? AND status = 'active'
+            SET organizer_user_id = ?,
+                updated_at = ?
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
             """,
-            (new_organizer_user_id, guild_id, session_id),
+            (
+                new_organizer_user_id,
+                current_time,
+                guild_id,
+                session_id,
+            ),
         )
-        updated = cursor.rowcount > 0
+
         connection.commit()
-        return updated
+        return cursor.rowcount > 0
+
     finally:
         connection.close()
 
-
-# =====================================================================
-# 내전 참가자 추가 / 제외 / 교체 / 포지션 설정
-# =====================================================================
 
 def add_inhouse_participant(
     guild_id: int,
@@ -783,126 +621,292 @@ def add_inhouse_participant(
     discord_user_id: int,
 ) -> tuple[bool, str]:
     connection = get_connection()
-    try:
-        cursor = connection.cursor()
 
-        cursor.execute(
+    try:
+        ensure_profile_custom_columns(connection)
+
+        session = connection.execute(
             """
-            SELECT game, civilwar_number
+            SELECT *
             FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ? AND status = 'active'
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
             """,
             (guild_id, session_id),
-        )
-        session_row = cursor.fetchone()
-        if session_row is None:
-            return False, "해당 내전 세션을 찾을 수 없거나 이미 종료되었습니다."
+        ).fetchone()
 
-        game = session_row["game"]
-        game_label = "League of Legends" if game == "lol" else "VALORANT"
+        if session is None:
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
 
-        cursor.execute(
+        game = session["game"]
+
+        profile = connection.execute(
             """
-            SELECT main_position, sub_position, custom_tier
+            SELECT *
             FROM profiles
-            WHERE guild_id = ? AND discord_user_id = ? AND game = ?
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
             """,
             (guild_id, discord_user_id, game),
-        )
-        profile_row = cursor.fetchone()
-        if profile_row is None:
+        ).fetchone()
+
+        if profile is None:
+            game_label = "League of Legends" if game == "lol" else "VALORANT"
             return (
                 False,
-                f"이 유저는 **{game_label}** 프로필이 등록되어 있지 않습니다. 먼저 `/register`로 등록해 주세요.",
+                f"이 유저는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/register`로 등록해 주세요.",
             )
 
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM inhouse_participants
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (guild_id, session_id),
-        )
-        current_count = cursor.fetchone()["cnt"]
-        if current_count >= 10:
-            return False, "이미 참가자가 10명으로 가득 찼습니다."
-
-        cursor.execute(
+        existing = connection.execute(
             """
             SELECT 1
             FROM inhouse_participants
-            WHERE session_id = ? AND discord_user_id = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
             (session_id, discord_user_id),
-        )
-        if cursor.fetchone() is not None:
-            return False, "이미 이 내전에 참가 중인 유저입니다."
+        ).fetchone()
 
-        default_pos = profile_row["main_position"] or "Unknown"
-        if default_pos == "Unknown":
-            default_pos = "Top" if game == "lol" else "Flex"
+        if existing is not None:
+            return False, "이미 해당 내전에 참가 중인 유저입니다."
 
-        default_sub_pos = profile_row["sub_position"]
-        default_custom_tier = profile_row["custom_tier"]
+        count_row = connection.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM inhouse_participants
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
 
-        cursor.execute(
+        if count_row["cnt"] >= 10:
+            return False, "이미 참가자가 10명 모두 모집되었습니다."
+
+        current_time = datetime.now(timezone.utc).isoformat()
+        recommended_pos = profile["main_position"]
+        recommended_sub_pos = profile["sub_position"] if "sub_position" in profile.keys() else None
+        custom_tier_val = profile["custom_tier"] if "custom_tier" in profile.keys() else None
+
+        connection.execute(
             """
             INSERT INTO inhouse_participants (
                 session_id,
                 guild_id,
                 discord_user_id,
+                discord_nickname,
+                riot_game_name,
+                riot_tagline,
+                server_location,
+                solo_tier,
+                flex_tier,
+                competitive_tier,
+                custom_tier,
+                main_position,
                 preferred_position,
                 sub_position,
-                custom_tier
+                joined_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 guild_id,
                 discord_user_id,
-                default_pos,
-                default_sub_pos,
-                default_custom_tier,
+                profile["discord_nickname"],
+                profile["riot_game_name"],
+                profile["riot_tagline"],
+                profile["server_location"],
+                profile["solo_tier"],
+                profile["flex_tier"],
+                profile["competitive_tier"],
+                custom_tier_val,
+                profile["main_position"],
+                recommended_pos,
+                recommended_sub_pos,
+                current_time,
             ),
         )
+
         connection.commit()
         return True, "참가자가 추가되었습니다."
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
 
 
 def remove_inhouse_participant(
+    guild_id: int,
     session_id: int,
     discord_user_id: int,
-    guild_id: int | None = None,
 ) -> tuple[bool, str]:
     connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        if guild_id is not None:
-            cursor.execute(
-                """
-                DELETE FROM inhouse_participants
-                WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-                """,
-                (guild_id, session_id, discord_user_id),
-            )
-        else:
-            cursor.execute(
-                """
-                DELETE FROM inhouse_participants
-                WHERE session_id = ? AND discord_user_id = ?
-                """,
-                (session_id, discord_user_id),
-            )
 
-        removed = cursor.rowcount > 0
+    try:
+        session = connection.execute(
+            """
+            SELECT 1
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if session is None:
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
+
+        cursor = connection.execute(
+            """
+            DELETE FROM inhouse_participants
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (session_id, discord_user_id),
+        )
+
         connection.commit()
-        if not removed:
-            return False, "현재 이 내전에 참가 중이지 않은 유저입니다."
-        return True, "내전 참가가 취소(제외)되었습니다."
+
+        if cursor.rowcount == 0:
+            return False, "해당 유저는 이 내전의 참가자 목록에 없습니다."
+
+        return True, "참가자가 목록에서 제외되었습니다."
+
+    finally:
+        connection.close()
+
+def get_inhouse_participants_with_profiles(
+    guild_id: int,
+    session_id: int,
+) -> list[dict]:
+    connection = get_connection()
+
+    try:
+        ensure_profile_custom_columns(connection)
+
+        session = connection.execute(
+            """
+            SELECT *
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if session is None:
+            return []
+
+        rows = connection.execute(
+            """
+            SELECT
+                p.session_id,
+                p.discord_user_id,
+                COALESCE(p.preferred_position, pr.main_position) AS preferred_position,
+                COALESCE(p.sub_position, pr.sub_position) AS sub_position,
+                p.assigned_team,
+                p.assigned_position,
+                p.joined_at,
+                COALESCE(pr.discord_nickname, p.discord_nickname) AS discord_nickname,
+                COALESCE(pr.riot_game_name, p.riot_game_name) AS riot_game_name,
+                COALESCE(pr.riot_tagline, p.riot_tagline) AS riot_tagline,
+                COALESCE(pr.server_location, p.server_location) AS server_location,
+                COALESCE(pr.solo_tier, p.solo_tier) AS solo_tier,
+                COALESCE(pr.flex_tier, p.flex_tier) AS flex_tier,
+                COALESCE(pr.competitive_tier, p.competitive_tier) AS competitive_tier,
+                COALESCE(pr.custom_tier, p.custom_tier) AS custom_tier,
+                COALESCE(pr.main_position, p.main_position) AS main_position
+            FROM inhouse_participants p
+            LEFT JOIN profiles pr
+                ON pr.guild_id = ?
+               AND pr.discord_user_id = p.discord_user_id
+               AND pr.game = ?
+            WHERE p.session_id = ?
+            ORDER BY p.joined_at ASC
+            """,
+            (
+                guild_id,
+                session["game"],
+                session_id,
+            ),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        connection.close()
+
+
+get_inhouse_participants = get_inhouse_participants_with_profiles
+
+def delete_inhouse_session(
+    guild_id: int,
+    session_id: int,
+) -> bool:
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            """
+            DELETE FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+            """,
+            (guild_id, session_id),
+        )
+
+        connection.commit()
+        return cursor.rowcount > 0
+
+    finally:
+        connection.close()
+
+def update_inhouse_participant_position(
+    guild_id: int,
+    session_id: int,
+    discord_user_id: int,
+    preferred_position: str,
+) -> tuple[bool, str]:
+    connection = get_connection()
+
+    try:
+        session = connection.execute(
+            """
+            SELECT 1
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if session is None:
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
+
+        cursor = connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET preferred_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (preferred_position, session_id, discord_user_id),
+        )
+
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return False, "해당 유저는 이 내전의 참가자 목록에 없습니다."
+
+        return True, f"선호 포지션이 **{preferred_position}**(으)로 설정되었습니다."
+
     finally:
         connection.close()
 
@@ -914,326 +918,162 @@ def replace_inhouse_participant(
     new_user_id: int,
 ) -> tuple[bool, str]:
     connection = get_connection()
-    try:
-        cursor = connection.cursor()
 
-        cursor.execute(
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        session = connection.execute(
             """
-            SELECT game
+            SELECT *
             FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ? AND status = 'active'
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
             """,
             (guild_id, session_id),
-        )
-        session_row = cursor.fetchone()
-        if session_row is None:
-            return False, "해당 내전 세션을 찾을 수 없습니다."
+        ).fetchone()
 
-        game = session_row["game"]
-        game_label = "League of Legends" if game == "lol" else "VALORANT"
+        if session is None:
+            connection.rollback()
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
 
-        cursor.execute(
+        old_existing = connection.execute(
             """
             SELECT 1
             FROM inhouse_participants
-            WHERE session_id = ? AND discord_user_id = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
             (session_id, old_user_id),
-        )
-        if cursor.fetchone() is None:
-            return False, "교체 대상(기존 유저)이 현재 내전 참가자가 아닙니다."
+        ).fetchone()
 
-        cursor.execute(
+        if old_existing is None:
+            connection.rollback()
+            return False, "교체 대상(기존 유저)이 이 내전의 참가자 목록에 없습니다."
+
+        new_existing = connection.execute(
             """
             SELECT 1
             FROM inhouse_participants
-            WHERE session_id = ? AND discord_user_id = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
             (session_id, new_user_id),
-        )
-        if cursor.fetchone() is not None:
-            return False, "새로 투입할 유저가 이미 이 내전에 참가 중입니다."
+        ).fetchone()
 
-        cursor.execute(
+        if new_existing is not None:
+            connection.rollback()
+            return False, "새로 추가하려는 유저가 이미 이 내전에 참가 중입니다."
+
+        game = session["game"]
+        profile = connection.execute(
             """
-            SELECT main_position, sub_position, custom_tier
+            SELECT *
             FROM profiles
-            WHERE guild_id = ? AND discord_user_id = ? AND game = ?
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
             """,
             (guild_id, new_user_id, game),
-        )
-        profile_row = cursor.fetchone()
-        if profile_row is None:
+        ).fetchone()
+
+        if profile is None:
+            connection.rollback()
+            game_label = "League of Legends" if game == "lol" else "VALORANT"
             return (
                 False,
-                f"새로 투입할 유저는 **{game_label}** 프로필이 등록되어 있지 않습니다. 먼저 `/register`로 등록해 주세요.",
+                f"새 참가자는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/register`로 등록해 주세요.",
             )
 
-        default_pos = profile_row["main_position"] or "Unknown"
-        if default_pos == "Unknown":
-            default_pos = "Top" if game == "lol" else "Flex"
-
-        cursor.execute(
+        connection.execute(
             """
             DELETE FROM inhouse_participants
-            WHERE session_id = ? AND discord_user_id = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
             (session_id, old_user_id),
         )
 
-        cursor.execute(
+        current_time = datetime.now(timezone.utc).isoformat()
+        recommended_pos = profile["main_position"]
+
+        connection.execute(
             """
             INSERT INTO inhouse_participants (
                 session_id,
                 guild_id,
                 discord_user_id,
+                discord_nickname,
+                riot_game_name,
+                riot_tagline,
+                server_location,
+                solo_tier,
+                flex_tier,
+                competitive_tier,
+                main_position,
                 preferred_position,
-                sub_position,
-                custom_tier
+                joined_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 guild_id,
                 new_user_id,
-                default_pos,
-                profile_row["sub_position"],
-                profile_row["custom_tier"],
+                profile["discord_nickname"],
+                profile["riot_game_name"],
+                profile["riot_tagline"],
+                profile["server_location"],
+                profile["solo_tier"],
+                profile["flex_tier"],
+                profile["competitive_tier"],
+                profile["main_position"],
+                recommended_pos,
+                current_time,
             ),
         )
-        connection.commit()
-        return True, "참가자 교체가 완료되었습니다."
-    finally:
-        connection.close()
-
-
-def update_inhouse_participant_position(
-    guild_id: int,
-    session_id: int,
-    discord_user_id: int,
-    preferred_position: str,
-) -> tuple[bool, str]:
-    """참가자의 주 포지션을 변경하고 프로필(profiles) 테이블에도 함께 저장합니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT sub_position
-            FROM inhouse_participants
-            WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-            """,
-            (guild_id, session_id, discord_user_id),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False, "먼저 **내전 참가** 버튼을 눌러 참가한 뒤에 포지션을 변경할 수 있습니다."
-
-        current_sub = row["sub_position"]
-        new_sub = None if current_sub == preferred_position else current_sub
-
-        cursor.execute(
-            """
-            UPDATE inhouse_participants
-            SET preferred_position = ?, sub_position = ?
-            WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-            """,
-            (preferred_position, new_sub, guild_id, session_id, discord_user_id),
-        )
-
-        cursor.execute(
-            """
-            SELECT game FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (guild_id, session_id),
-        )
-        s_row = cursor.fetchone()
-        if s_row is not None:
-            cursor.execute(
-                """
-                UPDATE profiles
-                SET main_position = ?, sub_position = ?
-                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-                """,
-                (preferred_position, new_sub, guild_id, discord_user_id, s_row["game"]),
-            )
 
         connection.commit()
-        return True, f"주 포지션이 **{preferred_position}**(으)로 설정되었습니다."
+        return True, "참가자가 성공적으로 교체되었습니다."
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
-
-
-def update_inhouse_participant_sub_position(
-    guild_id: int,
-    session_id: int,
-    discord_user_id: int,
-    sub_position: str | None,
-) -> tuple[bool, str]:
-    """참가자의 부 포지션을 변경하고 프로필(profiles) 테이블에도 함께 저장합니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT preferred_position
-            FROM inhouse_participants
-            WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-            """,
-            (guild_id, session_id, discord_user_id),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False, "먼저 **내전 참가** 버튼을 눌러 참가한 뒤에 부 포지션을 설정할 수 있습니다."
-
-        if sub_position and row["preferred_position"] == sub_position:
-            return False, "주 포지션과 동일한 포지션은 부 포지션으로 선택할 수 없습니다."
-
-        cursor.execute(
-            """
-            UPDATE inhouse_participants
-            SET sub_position = ?
-            WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-            """,
-            (sub_position, guild_id, session_id, discord_user_id),
-        )
-
-        cursor.execute(
-            """
-            SELECT game FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (guild_id, session_id),
-        )
-        s_row = cursor.fetchone()
-        if s_row is not None:
-            cursor.execute(
-                """
-                UPDATE profiles
-                SET sub_position = ?
-                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
-                """,
-                (sub_position, guild_id, discord_user_id, s_row["game"]),
-            )
-
-        connection.commit()
-        label = sub_position if sub_position else "선택안함"
-        return True, f"부 포지션이 **{label}**(으)로 설정되었습니다."
-    finally:
-        connection.close()
-
-
-def get_inhouse_participants_with_profiles(
-    guild_id: int,
-    session_id: int,
-) -> list[dict]:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT
-                p.session_id,
-                p.guild_id,
-                p.discord_user_id,
-                p.preferred_position,
-                COALESCE(p.sub_position, pr.sub_position) AS sub_position,
-                COALESCE(p.custom_tier, pr.custom_tier) AS custom_tier,
-                p.assigned_team,
-                p.assigned_position,
-                p.joined_at,
-                pr.discord_nickname,
-                pr.riot_game_name,
-                pr.riot_tagline,
-                pr.server_location,
-                pr.solo_tier,
-                pr.flex_tier,
-                pr.competitive_tier,
-                pr.main_position
-            FROM inhouse_participants p
-            JOIN inhouse_sessions s
-                ON p.session_id = s.session_id AND p.guild_id = s.guild_id
-            LEFT JOIN profiles pr
-                ON p.guild_id = pr.guild_id
-               AND p.discord_user_id = pr.discord_user_id
-               AND s.game = pr.game
-            WHERE p.guild_id = ? AND p.session_id = ?
-            ORDER BY p.joined_at ASC, p.discord_user_id ASC
-            """,
-            (guild_id, session_id),
-        )
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        connection.close()
-
-
-# =====================================================================
-# 팀 배정 / 밸런스 설정 / 진영 및 선수 스왑
-# =====================================================================
-
-def save_team_assignments(
-    guild_id: int,
-    session_id: int,
-    assignments: list[dict],
-) -> None:
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        for item in assignments:
-            uid = item.get("discord_user_id", item.get("user_id"))
-            cursor.execute(
-                """
-                UPDATE inhouse_participants
-                SET assigned_team = ?,
-                    assigned_position = ?
-                WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-                """,
-                (
-                    item["assigned_team"],
-                    item["assigned_position"],
-                    guild_id,
-                    session_id,
-                    uid,
-                ),
-            )
-        connection.commit()
-    finally:
-        connection.close()
-
 
 def get_session_balance_settings(
     guild_id: int,
     session_id: int,
     positions: list[str],
 ) -> dict[str, str]:
-    default_map = {pos: "황밸" for pos in positions}
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        row = connection.execute(
             """
             SELECT balance_settings
             FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ?
+            WHERE guild_id = ?
+              AND session_id = ?
             """,
             (guild_id, session_id),
-        )
-        row = cursor.fetchone()
-        if row and row["balance_settings"]:
-            try:
-                loaded = json.loads(row["balance_settings"])
-                if isinstance(loaded, dict):
-                    for pos in positions:
-                        if loaded.get(pos) in ("황밸", "윗밸", "아랫밸"):
-                            default_map[pos] = loaded[pos]
-            except Exception:
-                pass
-        return default_map
+        ).fetchone()
+
+        default_settings = {pos: "황밸" for pos in positions}
+        if row is None or not row["balance_settings"]:
+            return default_settings
+
+        try:
+            saved = json.loads(row["balance_settings"])
+            for pos in positions:
+                if saved.get(pos) not in ("아랫밸", "황밸", "윗밸"):
+                    saved[pos] = "황밸"
+            return saved
+        except Exception:
+            return default_settings
+
     finally:
         connection.close()
 
@@ -1244,17 +1084,70 @@ def save_session_balance_settings(
     settings: dict[str, str],
 ) -> None:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        current_time = datetime.now(timezone.utc).isoformat()
+        connection.execute(
             """
             UPDATE inhouse_sessions
-            SET balance_settings = ?
-            WHERE guild_id = ? AND session_id = ?
+            SET balance_settings = ?,
+                updated_at = ?
+            WHERE guild_id = ?
+              AND session_id = ?
             """,
-            (json.dumps(settings, ensure_ascii=False), guild_id, session_id),
+            (
+                json.dumps(settings, ensure_ascii=False),
+                current_time,
+                guild_id,
+                session_id,
+            ),
         )
         connection.commit()
+
+    finally:
+        connection.close()
+
+
+def save_team_assignments(
+    guild_id: int,
+    session_id: int,
+    assignments: list[dict],
+) -> None:
+    """
+    assignments 예시:
+    [
+        {"discord_user_id": 123, "assigned_team": "RED", "assigned_position": "Top"},
+        ...
+    ]
+    """
+    connection = get_connection()
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        for item in assignments:
+            connection.execute(
+                """
+                UPDATE inhouse_participants
+                SET assigned_team = ?,
+                    assigned_position = ?
+                WHERE session_id = ?
+                  AND discord_user_id = ?
+                """,
+                (
+                    item["assigned_team"],
+                    item["assigned_position"],
+                    session_id,
+                    item["discord_user_id"],
+                ),
+            )
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
 
@@ -1263,71 +1156,198 @@ def swap_two_participants_team(
     session_id: int,
     user_a_id: int,
     user_b_id: int,
-    guild_id: int | None = None,
-) -> bool:
-    """임의의 두 참가자의 배정된 팀(RED/BLUE)과 배정된 포지션을 서로 맞바꿉니다."""
+) -> tuple[bool, str]:
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        connection.execute("BEGIN IMMEDIATE")
+
+        row_a = connection.execute(
             """
-            SELECT discord_user_id, assigned_team, assigned_position
+            SELECT assigned_team, assigned_position
             FROM inhouse_participants
-            WHERE session_id = ? AND discord_user_id IN (?, ?)
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
-            (session_id, user_a_id, user_b_id),
-        )
-        rows = cursor.fetchall()
-        if len(rows) != 2:
-            return False
+            (session_id, user_a_id),
+        ).fetchone()
 
-        info = {row["discord_user_id"]: dict(row) for row in rows}
-        a_info = info.get(user_a_id)
-        b_info = info.get(user_b_id)
-        if not a_info or not b_info:
-            return False
+        row_b = connection.execute(
+            """
+            SELECT assigned_team, assigned_position
+            FROM inhouse_participants
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (session_id, user_b_id),
+        ).fetchone()
 
-        cursor.execute(
+        if row_a is None or row_b is None:
+            connection.rollback()
+            return False, "교환할 참가자 정보를 찾을 수 없습니다."
+
+        connection.execute(
             """
             UPDATE inhouse_participants
-            SET assigned_team = ?, assigned_position = ?
-            WHERE session_id = ? AND discord_user_id = ?
+            SET assigned_team = ?,
+                assigned_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
-            (
-                b_info["assigned_team"],
-                b_info["assigned_position"],
-                session_id,
-                user_a_id,
-            ),
+            (row_b["assigned_team"], row_b["assigned_position"], session_id, user_a_id),
         )
-        cursor.execute(
+
+        connection.execute(
             """
             UPDATE inhouse_participants
-            SET assigned_team = ?, assigned_position = ?
-            WHERE session_id = ? AND discord_user_id = ?
+            SET assigned_team = ?,
+                assigned_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
             """,
-            (
-                a_info["assigned_team"],
-                a_info["assigned_position"],
-                session_id,
-                user_b_id,
-            ),
+            (row_a["assigned_team"], row_a["assigned_position"], session_id, user_b_id),
         )
+
         connection.commit()
-        return True
+        return True, "두 참가자의 자리(팀/포지션)가 교체되었습니다."
+
+    except Exception:
+        connection.rollback()
+        raise
+
     finally:
         connection.close()
 
+def update_inhouse_participant_position(
+    guild_id: int,
+    session_id: int,
+    discord_user_id: int,
+    preferred_position: str,
+) -> tuple[bool, str]:
+    connection = get_connection()
+
+    try:
+        session = connection.execute(
+            """
+            SELECT 1
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if session is None:
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
+
+        cursor = connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET preferred_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (preferred_position, session_id, discord_user_id),
+        )
+
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return False, "먼저 [내전 참가] 버튼을 눌러 내전에 참가해 주세요."
+
+        return True, f"주 포지션이 **{preferred_position}**(으)로 변경되었습니다."
+
+    finally:
+        connection.close()
+
+def update_inhouse_participant_sub_position(
+    guild_id: int,
+    session_id: int,
+    discord_user_id: int,
+    sub_position: str | None,
+) -> tuple[bool, str]:
+    connection = get_connection()
+
+    try:
+        session = connection.execute(
+            """
+            SELECT 1
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+              AND session_id = ?
+              AND status = 'open'
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if session is None:
+            return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
+
+        cursor = connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET sub_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (sub_position, session_id, discord_user_id),
+        )
+
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return False, "먼저 [내전 참가] 버튼을 눌러 내전에 참가해 주세요."
+
+        display_sub = sub_position if sub_position else "선택안함"
+        return True, f"부 포지션이 **{display_sub}**(으)로 설정되었습니다."
+
+    finally:
+        connection.close()
+
+def save_inhouse_lobby_message(
+    guild_id: int,
+    session_id: int,
+    channel_id: int,
+    message_id: int,
+) -> None:
+    """
+    모집 로비 메시지의 채널 ID와 메시지 ID를 저장하여 언제든 실시간 업데이트할 수 있게 합니다.
+    """
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            """
+            UPDATE inhouse_sessions
+            SET lobby_channel_id = ?,
+                lobby_message_id = ?
+            WHERE guild_id = ?
+              AND session_id = ?
+            """,
+            (channel_id, message_id, guild_id, session_id),
+        )
+        connection.commit()
+
+    finally:
+        connection.close()
 
 def swap_entire_red_blue_teams(
     guild_id: int,
     session_id: int,
-) -> None:
-    """레드 팀과 블루 팀 전체의 진영(RED <-> BLUE)을 서로 맞바꾸고 밸런스 방향 설정도 반전합니다."""
+) -> tuple[bool, str]:
+    """
+    현재 편성된 5인 구성을 그대로 유지한 채 RED 팀과 BLUE 팀의 진영만 서로 맞바꿉니다.
+    또한 포지션별 밸런스 설정(윗밸 <-> 아랫밸) 및 기존 세트 승패 기록(RED <-> BLUE)도
+    선수들의 진영 이동에 맞춰 함께 반전합니다.
+    """
     connection = get_connection()
+
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        connection.execute("BEGIN IMMEDIATE")
+
+        # 1. 참가자들의 RED <-> BLUE 팀 소속 일괄 반전
+        connection.execute(
             """
             UPDATE inhouse_participants
             SET assigned_team = CASE
@@ -1335,133 +1355,292 @@ def swap_entire_red_blue_teams(
                 WHEN assigned_team = 'BLUE' THEN 'RED'
                 ELSE assigned_team
             END
-            WHERE guild_id = ? AND session_id = ?
+            WHERE session_id = ?
             """,
-            (guild_id, session_id),
+            (session_id,),
         )
 
-        cursor.execute(
+        # 2. 레드 기준 밸런스 표시도 윗밸 <-> 아랫밸 반전하여 일관성 유지
+        row = connection.execute(
             """
             SELECT balance_settings
             FROM inhouse_sessions
-            WHERE guild_id = ? AND session_id = ?
+            WHERE guild_id = ?
+              AND session_id = ?
             """,
             (guild_id, session_id),
-        )
-        row = cursor.fetchone()
+        ).fetchone()
+
         if row and row["balance_settings"]:
             try:
-                loaded = json.loads(row["balance_settings"])
-                if isinstance(loaded, dict):
-                    flipped = {}
-                    for pos, mode in loaded.items():
-                        if mode == "윗밸":
-                            flipped[pos] = "아랫밸"
-                        elif mode == "아랫밸":
-                            flipped[pos] = "윗밸"
-                        else:
-                            flipped[pos] = mode
-                    cursor.execute(
-                        """
-                        UPDATE inhouse_sessions
-                        SET balance_settings = ?
-                        WHERE guild_id = ? AND session_id = ?
-                        """,
-                        (
-                            json.dumps(flipped, ensure_ascii=False),
-                            guild_id,
-                            session_id,
-                        ),
-                    )
+                settings = json.loads(row["balance_settings"])
+                for pos, val in list(settings.items()):
+                    if val == "윗밸":
+                        settings[pos] = "아랫밸"
+                    elif val == "아랫밸":
+                        settings[pos] = "윗밸"
+
+                connection.execute(
+                    """
+                    UPDATE inhouse_sessions
+                    SET balance_settings = ?,
+                        updated_at = ?
+                    WHERE guild_id = ?
+                      AND session_id = ?
+                    """,
+                    (
+                        json.dumps(settings, ensure_ascii=False),
+                        datetime.now(timezone.utc).isoformat(),
+                        guild_id,
+                        session_id,
+                    ),
+                )
             except Exception:
                 pass
 
         connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+    # 3. 기록된 세트별 승패(RED <-> BLUE)도 진영 이동에 맞춰 함께 반전
+    try:
+        state = get_fearless_state(guild_id, session_id)
+        results_data = state.get("results", {})
+        if results_data:
+            swapped_results = {}
+            for set_num, winner in results_data.items():
+                if winner == "RED":
+                    swapped_results[set_num] = "BLUE"
+                elif winner == "BLUE":
+                    swapped_results[set_num] = "RED"
+                else:
+                    swapped_results[set_num] = winner
+
+            _save_fearless_payload(
+                guild_id=guild_id,
+                session_id=session_id,
+                enabled=state["enabled"],
+                sets_data=state["sets"],
+                results_data=swapped_results,
+            )
+    except Exception:
+        pass
+
+    return True, "레드팀과 블루팀의 진영 및 승패 기록이 함께 변경되었습니다."
+
+
+def update_inhouse_participant_position(
+    guild_id: int,
+    session_id: int,
+    discord_user_id: int,
+    preferred_position: str,
+) -> tuple[bool, str]:
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET preferred_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (preferred_position, session_id, discord_user_id),
+        )
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return False, "먼저 [🎮 내전 참가] 버튼을 눌러 내전에 참가해 주세요."
+
+        return True, f"주 포지션이 **{preferred_position}**(으)로 변경되었습니다."
+
     finally:
         connection.close()
 
 
-def flip_all_teams_red_blue(guild_id: int, session_id: int) -> None:
-    swap_entire_red_blue_teams(guild_id, session_id)
+def update_inhouse_participant_sub_position(
+    guild_id: int,
+    session_id: int,
+    discord_user_id: int,
+    sub_position: str | None,
+) -> tuple[bool, str]:
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET sub_position = ?
+            WHERE session_id = ?
+              AND discord_user_id = ?
+            """,
+            (sub_position, session_id, discord_user_id),
+        )
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return False, "먼저 [🎮 내전 참가] 버튼을 눌러 내전에 참가해 주세요."
+
+        label = sub_position if sub_position else "선택안함"
+        return True, f"부 포지션이 **{label}**(으)로 변경되었습니다."
+
+    finally:
+        connection.close()
 
 
-# =====================================================================
-# 피어리스(Fearless) 및 세트 승패 기록 관리
-# =====================================================================
+def flip_all_teams_red_blue(session_id: int) -> None:
+    """
+    편성된 팀원 구성을 그대로 유지한 채 RED 팀과 BLUE 팀만 통째로 맞바꿉니다.
+    """
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            """
+            UPDATE inhouse_participants
+            SET assigned_team = CASE
+                WHEN assigned_team = 'RED' THEN 'BLUE'
+                WHEN assigned_team = 'BLUE' THEN 'RED'
+                ELSE assigned_team
+            END
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        )
+        connection.commit()
+
+    finally:
+        connection.close()
+# ---------------------------------------------------------
+# 7단계: 피어리스(Fearless) 규칙 및 챔피언/요원 기록 관리
+# (※ 주의: def 앞에 공백이 하나도 없어야 합니다!)
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+# 7단계 개편: 세트별 승패 기록 + LoL 피어리스 순서 제어
+# ---------------------------------------------------------
+def _ensure_fearless_columns(conn) -> None:
+    """inhouse_sessions 테이블에 fearless_enabled, fearless_data 컬럼이 없으면 자동 추가합니다."""
+    rows = conn.execute("PRAGMA table_info(inhouse_sessions)").fetchall()
+    existing_cols = {row[1] for row in rows}
+    if "fearless_enabled" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE inhouse_sessions ADD COLUMN fearless_enabled INTEGER NOT NULL DEFAULT 0"
+        )
+    if "fearless_data" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE inhouse_sessions ADD COLUMN fearless_data TEXT NOT NULL DEFAULT '{}'"
+        )
+    conn.commit()
+
 
 def get_fearless_state(guild_id: int, session_id: int) -> dict:
-    """세션의 세트 진행도, 승패 결과, 피어리스 활성화 여부 및 세트별 사용 챔피언 목록을 반환합니다."""
-    default_state = {
-        "enabled": False,
-        "current_set": 1,
-        "sets": {},     # {"2": {"red": [...], "blue": [...], "extra": [...]}, ...}
-        "results": {},  # {"1": "RED", "2": "BLUE", ...}
-    }
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
+    """해당 내전 세션의 피어리스 상태와 세트 승패 기록을 반환합니다."""
+    with get_connection() as conn:
+        _ensure_fearless_columns(conn)
+        row = conn.execute(
             """
-            SELECT fearless_data
+            SELECT fearless_enabled, fearless_data
             FROM inhouse_sessions
             WHERE guild_id = ? AND session_id = ?
             """,
             (guild_id, session_id),
-        )
-        row = cursor.fetchone()
-        if not row or not row["fearless_data"]:
-            return default_state
+        ).fetchone()
 
-        try:
-            data = json.loads(row["fearless_data"])
-            return {
-                "enabled": bool(data.get("enabled", False)),
-                "current_set": int(data.get("current_set", 1)),
-                "sets": dict(data.get("sets", {})),
-                "results": dict(data.get("results", {})),
-            }
-        except Exception:
-            return default_state
-    finally:
-        connection.close()
+    if not row:
+        return {"enabled": False, "current_set": 1, "sets": {}, "results": {}}
 
-
-def _save_fearless_payload(guild_id: int, session_id: int, payload: dict) -> None:
-    connection = get_connection()
+    enabled = bool(row["fearless_enabled"])
+    raw_json = row["fearless_data"] or "{}"
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, dict):
+            parsed = {}
+    except Exception:
+        parsed = {}
+
+    if "sets" in parsed or "results" in parsed:
+        sets_data = parsed.get("sets", {})
+        results_data = parsed.get("results", {})
+    else:
+        sets_data = parsed
+        results_data = {}
+
+    # 현재 진행 세트는 오직 '승패가 결정된 세트(results_data)' 기준으로만 계산
+    completed_sets = [int(k) for k in results_data.keys() if str(k).isdigit()]
+    current_set = (max(completed_sets) + 1) if completed_sets else 1
+
+    return {
+        "enabled": enabled,
+        "current_set": current_set,
+        "sets": sets_data,
+        "results": results_data,
+    }
+
+
+def _save_fearless_payload(
+    guild_id: int,
+    session_id: int,
+    enabled: bool,
+    sets_data: dict,
+    results_data: dict,
+) -> None:
+    payload = {
+        "sets": sets_data,
+        "results": results_data,
+    }
+    with get_connection() as conn:
+        _ensure_fearless_columns(conn)
+        conn.execute(
             """
             UPDATE inhouse_sessions
-            SET fearless_data = ?
+            SET fearless_enabled = ?,
+                fearless_data = ?
             WHERE guild_id = ? AND session_id = ?
             """,
-            (json.dumps(payload, ensure_ascii=False), guild_id, session_id),
+            (
+                1 if enabled else 0,
+                json.dumps(payload, ensure_ascii=False),
+                guild_id,
+                session_id,
+            ),
         )
-        connection.commit()
-    finally:
-        connection.close()
+        conn.commit()
 
 
 def toggle_fearless_mode(guild_id: int, session_id: int) -> dict:
+    """피어리스 ON/OFF를 전환합니다."""
     state = get_fearless_state(guild_id, session_id)
-    state["enabled"] = not state["enabled"]
-    _save_fearless_payload(guild_id, session_id, state)
-    return state
+    new_enabled = not state["enabled"]
+    _save_fearless_payload(
+        guild_id=guild_id,
+        session_id=session_id,
+        enabled=new_enabled,
+        sets_data=state["sets"],
+        results_data=state["results"],
+    )
+    return get_fearless_state(guild_id, session_id)
 
 
-def record_set_winner(
-    guild_id: int,
-    session_id: int,
-    winner_side: str,
-) -> dict:
-    """현재 세트의 승리 팀('RED' 또는 'BLUE')을 기록하고 다음 세트로 진행도를 넘깁니다."""
+def record_set_winner(guild_id: int, session_id: int, winner_side: str) -> dict:
+    """현재 세트의 승리 팀('RED' 또는 'BLUE')을 기록하고 다음 세트로 넘깁니다."""
     state = get_fearless_state(guild_id, session_id)
-    cur_set = state["current_set"]
-    state["results"][str(cur_set)] = winner_side
-    state["current_set"] = cur_set + 1
-    _save_fearless_payload(guild_id, session_id, state)
-    return state
+    current_set = state["current_set"]
+    results_data = state["results"]
+    results_data[str(current_set)] = winner_side.upper()
+
+    _save_fearless_payload(
+        guild_id=guild_id,
+        session_id=session_id,
+        enabled=state["enabled"],
+        sets_data=state["sets"],
+        results_data=results_data,
+    )
+    return get_fearless_state(guild_id, session_id)
 
 
 def save_fearless_set_record(
@@ -1470,335 +1649,586 @@ def save_fearless_set_record(
     set_number: int,
     red_champions: list[str],
     blue_champions: list[str],
-    extra_bans: list[str],
+    extra_bans: list[str] | None = None,
 ) -> dict:
+    """특정 세트의 피어리스 챔피언을 저장합니다. (세트 번호는 넘어가지 않고 유지됩니다)"""
     state = get_fearless_state(guild_id, session_id)
-    state["enabled"] = True
-    state["sets"][str(set_number)] = {
-        "red": red_champions,
-        "blue": blue_champions,
-        "extra": extra_bans,
+    sets_data = state["sets"]
+
+    sets_data[str(set_number)] = {
+        "red": [c.strip() for c in red_champions if c.strip()],
+        "blue": [c.strip() for c in blue_champions if c.strip()],
+        "extra": [c.strip() for c in (extra_bans or []) if c.strip()],
     }
-    _save_fearless_payload(guild_id, session_id, state)
-    return state
+
+    _save_fearless_payload(
+        guild_id=guild_id,
+        session_id=session_id,
+        enabled=True,
+        sets_data=sets_data,
+        results_data=state["results"],
+    )
+    return get_fearless_state(guild_id, session_id)
 
 
 def clear_fearless_records(guild_id: int, session_id: int) -> dict:
+    """입력된 피어리스 챔피언 기록만 초기화합니다. (세트 승패 스코어는 유지)"""
     state = get_fearless_state(guild_id, session_id)
-    state["sets"] = {}
-    _save_fearless_payload(guild_id, session_id, state)
-    return state
+    _save_fearless_payload(
+        guild_id=guild_id,
+        session_id=session_id,
+        enabled=state["enabled"],
+        sets_data={},
+        results_data=state["results"],
+    )
+    return get_fearless_state(guild_id, session_id)
 
 
-# =====================================================================
-# 모집 보조 기능 (미참가 유저 조회 / 10명 자동 채우기 / 같은 팀 그룹 예약)
-# =====================================================================
-
-def get_unjoined_registered_profiles(
-    guild_id: int,
-    session_id: int,
-    game: str,
-) -> list[dict]:
-    """해당 게임에 등록되어 있으나 현재 내전 세션에 참가하지 않은 유저 프로필 목록을 반환합니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
+# ---------------------------------------------------------
+# 주최자 수동 인원 추가 및 10명 자동 채우기 (profiles 실제 컬럼명 반영)
+# ---------------------------------------------------------
+def get_unjoined_registered_profiles(guild_id: int, session_id: int, game: str) -> list[dict]:
+    """해당 게임 프로필이 등록되어 있으나 현재 내전 세션에 아직 참가하지 않은 유저 목록을 반환합니다."""
+    with get_connection() as conn:
+        rows = conn.execute(
             """
-            SELECT pr.*
-            FROM profiles pr
-            WHERE pr.guild_id = ?
-              AND pr.game = ?
-              AND pr.discord_user_id NOT IN (
-                  SELECT p.discord_user_id
-                  FROM inhouse_participants p
-                  WHERE p.guild_id = ? AND p.session_id = ?
+            SELECT p.discord_user_id,
+                   p.discord_nickname,
+                   p.riot_game_name,
+                   p.riot_tagline,
+                   p.solo_tier,
+                   p.flex_tier,
+                   p.competitive_tier,
+                   p.main_position
+            FROM profiles p
+            WHERE p.guild_id = ?
+              AND p.game = ?
+              AND p.discord_user_id NOT IN (
+                  SELECT discord_user_id
+                  FROM inhouse_participants
+                  WHERE session_id = ?
               )
-            ORDER BY pr.discord_nickname COLLATE NOCASE ASC
+            ORDER BY p.discord_nickname ASC
             """,
-            (guild_id, game, guild_id, session_id),
-        )
-        rows = cursor.fetchall()
+            (guild_id, game, session_id),
+        ).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        connection.close()
 
 
-def auto_fill_inhouse_to_ten(
-    guild_id: int,
-    session_id: int,
-    game: str,
-) -> tuple[bool, str, list[dict]]:
-    """현재 내전 참가자가 10명이 될 때까지 미참가 등록 유저(부족 시 테스트 봇)를 자동으로 채웁니다."""
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM inhouse_participants
-            WHERE guild_id = ? AND session_id = ?
-            """,
-            (guild_id, session_id),
-        )
-        current_count = int(cursor.fetchone()["cnt"])
-    finally:
-        connection.close()
+def auto_fill_inhouse_to_ten(guild_id: int, session_id: int) -> tuple[bool, str]:
+    """
+    1순위: 서버에 등록된 미참가 유저를 자동으로 참가시킴
+    2순위: 그래도 10명이 안 되면 부족한 인원만큼 가상 테스트 프로필을 생성해 10명을 채움
+    """
+    from datetime import datetime, timezone
+
+    session = get_inhouse_session_by_id(guild_id, session_id)
+    if not session:
+        return False, "존재하지 않는 내전입니다."
+
+    game = session["game"]
+    participants = get_inhouse_participants_with_profiles(guild_id, session_id)
+    current_count = len(participants)
 
     if current_count >= 10:
-        return False, "이미 참가자가 10명으로 가득 차 있습니다.", []
+        return False, "이미 10명이 모두 모집되었습니다."
 
-    needed = 10 - current_count
-    candidates = get_unjoined_registered_profiles(guild_id, session_id, game)
+    added_real = 0
+    added_bots = 0
 
-    added_users: list[dict] = []
-    for prof in candidates:
-        if len(added_users) >= needed:
+    # 1순위: 실제 등록된 미참가 서버원 먼저 추가
+    unjoined = get_unjoined_registered_profiles(guild_id, session_id, game)
+    for prof in unjoined:
+        if current_count >= 10:
             break
-        ok, _ = add_inhouse_participant(
-            guild_id=guild_id,
-            session_id=session_id,
-            discord_user_id=int(prof["discord_user_id"]),
-        )
+        ok, _ = add_inhouse_participant(guild_id, session_id, prof["discord_user_id"])
         if ok:
-            added_users.append(prof)
+            current_count += 1
+            added_real += 1
 
-    still_needed = needed - len(added_users)
-    if still_needed > 0:
-        lol_positions = ["Top", "Jungle", "Mid", "AD carry", "Support"]
-        val_positions = ["Duelist", "Initiator", "Controller", "Sentinel", "Flex"]
-        lol_tiers = [
-            ("Silver II", "Silver III"),
-            ("Gold IV", "Silver I"),
-            ("Gold II", "Gold III"),
-            ("Platinum IV", "Gold I"),
-            ("Platinum II", "Platinum III"),
-            ("Emerald IV", "Platinum I"),
-            ("Emerald II", "Emerald III"),
-            ("Diamond IV", "Emerald I"),
-        ]
-        val_tiers = [
-            "Silver 2",
-            "Gold 1",
-            "Gold 3",
-            "Platinum 2",
-            "Diamond 1",
-            "Ascendant 1",
-        ]
+    # 2순위: 여전히 10명 미만이면 가상 테스트 유저 생성 및 참가
+    lol_positions = ["Top", "Jungle", "Mid", "AD carry", "Support"]
+    val_positions = ["Duelist", "Initiator", "Controller", "Sentinel", "Flex"]
+    sample_tiers = [
+        "IRON I", "BRONZE II", "SILVER I", "GOLD III", "PLATINUM II",
+        "EMERALD IV", "EMERALD I", "DIAMOND III", "MASTER", "GRANDMASTER",
+    ]
+    pos_list = lol_positions if game == "lol" else val_positions
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-        connection = get_connection()
-        try:
-            cursor = connection.cursor()
-            for idx in range(1, 25):
-                if still_needed <= 0:
-                    break
-                dummy_uid = 900000000000000000 + idx
-                cursor.execute(
-                    """
-                    SELECT 1 FROM inhouse_participants
-                    WHERE guild_id = ? AND session_id = ? AND discord_user_id = ?
-                    """,
-                    (guild_id, session_id, dummy_uid),
-                )
-                if cursor.fetchone() is not None:
-                    continue
+    with get_connection() as conn:
+        bot_idx = 1
+        while current_count < 10 and bot_idx <= 20:
+            fake_user_id = 900000000000000000 + bot_idx
+            pos = pos_list[(bot_idx - 1) % 5]
+            tier = sample_tiers[(bot_idx - 1) % len(sample_tiers)]
 
-                if game == "lol":
-                    main_pos = lol_positions[(idx - 1) % len(lol_positions)]
-                    sub_pos = lol_positions[idx % len(lol_positions)]
-                    solo_t, flex_t = lol_tiers[(idx - 1) % len(lol_tiers)]
-                    comp_t = "Unranked"
-                else:
-                    main_pos = val_positions[(idx - 1) % len(val_positions)]
-                    sub_pos = val_positions[idx % len(val_positions)]
-                    solo_t, flex_t = "Unranked", "Unranked"
-                    comp_t = val_tiers[(idx - 1) % len(val_tiers)]
+            # 가상 유저 프로필을 profiles 스키마에 맞춰 등록
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO profiles (
+                    guild_id, discord_user_id, game,
+                    discord_nickname, riot_game_name, riot_tagline, server_location,
+                    solo_tier, flex_tier, competitive_tier, main_position,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'Korea', ?, 'UNRANKED', ?, ?, ?, ?)
+                """,
+                (
+                    guild_id,
+                    fake_user_id,
+                    game,
+                    f"테스트봇{bot_idx}",
+                    f"TestBot{bot_idx}",
+                    f"KR{bot_idx}",
+                    tier,
+                    tier,
+                    pos,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
 
-                bot_nick = f"테스트봇{idx}호"
-                riot_name = f"TestBot{idx}"
-                riot_tag = "KR1"
+            ok, _ = add_inhouse_participant(guild_id, session_id, fake_user_id)
+            if ok:
+                current_count += 1
+                added_bots += 1
+            bot_idx += 1
 
-                cursor.execute(
-                    """
-                    INSERT INTO profiles (
-                        guild_id, discord_user_id, discord_nickname, game,
-                        riot_game_name, riot_tagline, server_location,
-                        solo_tier, flex_tier, competitive_tier, main_position, sub_position
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 'KR', ?, ?, ?, ?, ?)
-                    ON CONFLICT(guild_id, discord_user_id, game) DO UPDATE SET
-                        discord_nickname = excluded.discord_nickname,
-                        solo_tier = excluded.solo_tier,
-                        flex_tier = excluded.flex_tier,
-                        competitive_tier = excluded.competitive_tier,
-                        main_position = excluded.main_position,
-                        sub_position = excluded.sub_position
-                    """,
-                    (
-                        guild_id,
-                        dummy_uid,
-                        bot_nick,
-                        game,
-                        riot_name,
-                        riot_tag,
-                        solo_t,
-                        flex_t,
-                        comp_t,
-                        main_pos,
-                        sub_pos,
-                    ),
-                )
+    return True, f"자동 충원 완료! (등록 서버원 {added_real}명 + 가상 테스트봇 {added_bots}명 추가됨)"
 
-                cursor.execute(
-                    """
-                    INSERT INTO inhouse_participants (
-                        session_id, guild_id, discord_user_id, preferred_position, sub_position
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (session_id, guild_id, dummy_uid, main_pos, sub_pos),
-                )
+def delete_user_profile(
+    guild_id: int,
+    discord_user_id: int,
+    game: str | None = None,
+) -> int:
+    """특정 유저의 등록된 프로필(game이 None이거나 'all'이면 전체 게임, 아니면 해당 게임만)을 삭제하고 삭제된 행 수를 반환합니다."""
+    with get_connection() as conn:
+        if game is None or game == "all":
+            cursor = conn.execute(
+                """
+                DELETE FROM profiles
+                WHERE guild_id = ? AND discord_user_id = ?
+                """,
+                (guild_id, discord_user_id),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                DELETE FROM profiles
+                WHERE guild_id = ? AND discord_user_id = ? AND game = ?
+                """,
+                (guild_id, discord_user_id, game),
+            )
+        conn.commit()
+        return cursor.rowcount
 
-                added_users.append(
-                    {
-                        "discord_user_id": dummy_uid,
-                        "discord_nickname": bot_nick,
-                        "riot_game_name": riot_name,
-                        "riot_tagline": riot_tag,
-                    }
-                )
-                still_needed -= 1
+def list_open_inhouse_sessions(guild_id: int) -> list[dict]:
+    """해당 서버에서 현재 열려 있는(모집/진행 중인) 내전 세션 목록을 최신순으로 반환합니다."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM inhouse_sessions
+            WHERE guild_id = ?
+            ORDER BY session_id DESC
+            """,
+            (guild_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
-            connection.commit()
-        finally:
-            connection.close()
+def get_user_profile(
+    guild_id: int,
+    discord_user_id: int,
+    game: str,
+) -> dict | None:
+    """특정 유저의 게임 프로필 1건을 조회합니다."""
+    connection = get_connection()
 
-    if not added_users:
-        return False, "추가할 수 있는 인원이 없습니다.", []
+    try:
+        ensure_profile_custom_columns(connection)
+        row = connection.execute(
+            """
+            SELECT
+                guild_id,
+                discord_user_id,
+                game,
+                discord_nickname,
+                riot_game_name,
+                riot_tagline,
+                server_location,
+                puuid,
+                solo_tier,
+                flex_tier,
+                competitive_tier,
+                custom_tier,
+                main_position,
+                sub_position,
+                created_at,
+                updated_at,
+                last_api_sync
+            FROM profiles
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
+            """,
+            (guild_id, discord_user_id, game),
+        ).fetchone()
 
-    return True, f"총 **{len(added_users)}명**이 자동으로 채워져 10명이 완성되었습니다!", added_users
+        return dict(row) if row is not None else None
+
+    finally:
+        connection.close()
 
 
-def get_session_team_groups(guild_id: int, session_id: int) -> list[list[int]]:
-    """해당 내전 세션에 설정된 '같은 팀 묶기 그룹' 목록([[uid1, uid2], ...])을 반환합니다."""
+def can_user_edit_profile(
+    guild_id: int,
+    actor_user_id: int,
+    target_user_id: int,
+    game: str,
+) -> tuple[bool, str]:
+    """
+    프로필(체감 티어 등) 수정 권한을 확인합니다.
+    1) 본인이면 항상 가능
+    2) 본인이 아니더라도, target_user_id가 현재 해당 게임의 활성 내전에 참가 중이고,
+       actor_user_id 역시 그 내전에 함께 참가 중(또는 주최자)이라면 수정 가능
+    """
+    if actor_user_id == target_user_id:
+        return True, "본인 프로필"
+
     connection = get_connection()
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        row = connection.execute(
+            """
+            SELECT s.session_id, s.civilwar_number
+            FROM inhouse_sessions s
+            INNER JOIN inhouse_participants p_target
+                ON s.session_id = p_target.session_id
+            LEFT JOIN inhouse_participants p_actor
+                ON s.session_id = p_actor.session_id
+               AND p_actor.discord_user_id = ?
+            WHERE s.guild_id = ?
+              AND s.game = ?
+              AND s.status NOT IN ('closed', 'ended', 'cancelled')
+              AND p_target.discord_user_id = ?
+              AND (p_actor.discord_user_id IS NOT NULL OR s.organizer_user_id = ?)
+            ORDER BY s.session_id DESC
+            LIMIT 1
+            """,
+            (actor_user_id, guild_id, game, target_user_id, actor_user_id),
+        ).fetchone()
+
+        if row is not None:
+            return True, f"civilwar #{row['civilwar_number']} 내전 참가자 권한"
+
+        return (
+            False,
+            "타인의 프로필은 조회만 가능합니다. (단, 같은 내전에 참가 중인 인원끼리는 서로의 체감 티어/프로필을 수정할 수 있습니다.)",
+        )
+
+    finally:
+        connection.close()
+
+
+def update_user_profile_custom_settings(
+    guild_id: int,
+    discord_user_id: int,
+    game: str,
+    *,
+    custom_tier: str | None = ...,
+    main_position: str | None = ...,
+    sub_position: str | None = ...,
+) -> dict | None:
+    """
+    유저 프로필의 체감 티어(custom_tier), 주 포지션(main_position), 부 포지션(sub_position)을 수정하고,
+    현재 모집 중인 내전(open)에 참가 중이라면 해당 참가자 정보도 함께 갱신합니다.
+    """
+    connection = get_connection()
+
+    try:
+        ensure_profile_custom_columns(connection)
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        updates = ["updated_at = ?"]
+        params: list = [current_time]
+
+        if custom_tier is not ...:
+            updates.append("custom_tier = ?")
+            params.append(custom_tier)
+
+        if main_position is not ...:
+            updates.append("main_position = ?")
+            params.append(main_position)
+
+        if sub_position is not ...:
+            updates.append("sub_position = ?")
+            params.append(sub_position)
+
+        params.extend([guild_id, discord_user_id, game])
+
+        connection.execute(
+            f"""
+            UPDATE profiles
+            SET {', '.join(updates)}
+            WHERE guild_id = ?
+              AND discord_user_id = ?
+              AND game = ?
+            """,
+            tuple(params),
+        )
+
+        # 현재 진행 중인 내전 참가자 테이블에도 동기화
+        part_updates = []
+        part_params: list = []
+
+        if custom_tier is not ...:
+            part_updates.append("custom_tier = ?")
+            part_params.append(custom_tier)
+
+        if main_position is not ...:
+            part_updates.append("main_position = ?")
+            part_updates.append("preferred_position = ?")
+            part_params.extend([main_position, main_position])
+
+        if sub_position is not ...:
+            part_updates.append("sub_position = ?")
+            part_params.append(sub_position)
+
+        if part_updates:
+            part_params.extend([guild_id, discord_user_id, game])
+            connection.execute(
+                f"""
+                UPDATE inhouse_participants
+                SET {', '.join(part_updates)}
+                WHERE guild_id = ?
+                  AND discord_user_id = ?
+                  AND session_id IN (
+                      SELECT session_id
+                      FROM inhouse_sessions
+                      WHERE guild_id = ?
+                        AND game = ?
+                        AND status IN ('closed', 'ended', 'cancelled')
+                  )
+                """,
+                (
+                    *part_params[:-3],
+                    guild_id,
+                    discord_user_id,
+                    guild_id,
+                    game,
+                ),
+            )
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+    return get_user_profile(guild_id, discord_user_id, game)
+
+def get_session_team_groups(guild_id: int, session_id: int) -> list[list[int]]:
+    """해당 내전에 예약된 같은 팀 그룹 목록([[uid1, uid2], ...])을 반환합니다."""
+    connection = get_connection()
+    try:
+        _ensure_column(connection, "inhouse_sessions", "team_groups_json", "TEXT DEFAULT '[]'")
+        row = connection.execute(
             """
             SELECT team_groups_json
             FROM inhouse_sessions
             WHERE guild_id = ? AND session_id = ?
             """,
             (guild_id, session_id),
-        )
-        row = cursor.fetchone()
-        if not row or not row["team_groups_json"]:
+        ).fetchone()
+
+        if row is None or not row["team_groups_json"]:
             return []
-        try:
-            data = json.loads(row["team_groups_json"])
-            if isinstance(data, list):
-                return [
-                    [int(u) for u in grp if isinstance(u, (int, str))]
-                    for grp in data
-                    if isinstance(grp, list) and len(grp) >= 2
-                ]
-        except Exception:
-            pass
+
+        data = json.loads(row["team_groups_json"])
+        if not isinstance(data, list):
+            return []
+
+        result: list[list[int]] = []
+        for group in data:
+            if isinstance(group, list):
+                valid_ids = [int(x) for x in group]
+                if len(valid_ids) >= 2:
+                    result.append(valid_ids)
+        return result
+    except Exception:
         return []
     finally:
         connection.close()
 
 
-def save_session_team_groups(
+def add_or_update_session_team_group(
     guild_id: int,
     session_id: int,
-    groups: list[list[int]],
-) -> None:
+    selected_user_ids: list[int],
+) -> tuple[bool, str, list[list[int]]]:
+    """
+    선택된 2~5명의 참가자를 같은 팀 그룹으로 묶습니다.
+    기존에 다른 그룹에 속해 있던 인원이 포함되면 새 그룹으로 갱신합니다.
+    """
+    unique_ids = []
+    for uid in selected_user_ids:
+        if int(uid) not in unique_ids:
+            unique_ids.append(int(uid))
+
+    if len(unique_ids) < 2:
+        return False, "같은 팀으로 묶으려면 최소 2명 이상을 선택해야 합니다.", []
+    if len(unique_ids) > 5:
+        return False, "한 팀의 최대 인원은 5명이므로 최대 5명까지만 묶을 수 있습니다.", []
+
     connection = get_connection()
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        _ensure_column(connection, "inhouse_sessions", "team_groups_json", "TEXT DEFAULT '[]'")
+        row = connection.execute(
+            """
+            SELECT team_groups_json
+            FROM inhouse_sessions
+            WHERE guild_id = ? AND session_id = ? AND status = 'open'
+            """,
+            (guild_id, session_id),
+        ).fetchone()
+
+        if row is None:
+            return False, "진행 중인 모집 세션을 찾을 수 없습니다.", []
+
+        try:
+            existing_groups = json.loads(row["team_groups_json"] or "[]")
+        except Exception:
+            existing_groups = []
+
+        # 새로 선택된 유저들을 기존 그룹에서 먼저 제외
+        new_groups: list[list[int]] = []
+        for g in existing_groups:
+            rem = [int(u) for u in g if int(u) not in unique_ids]
+            if len(rem) >= 2:
+                new_groups.append(rem)
+
+        new_groups.append(unique_ids)
+
+        connection.execute(
             """
             UPDATE inhouse_sessions
             SET team_groups_json = ?
             WHERE guild_id = ? AND session_id = ?
             """,
-            (json.dumps(groups), guild_id, session_id),
+            (json.dumps(new_groups), guild_id, session_id),
+        )
+        connection.commit()
+        return True, f"{len(unique_ids)}명을 같은 팀으로 예약했습니다.", new_groups
+    finally:
+        connection.close()
+
+
+def clear_session_team_groups(guild_id: int, session_id: int) -> None:
+    """해당 내전의 모든 같은 팀 묶기 예약을 초기화합니다."""
+    connection = get_connection()
+    try:
+        _ensure_column(connection, "inhouse_sessions", "team_groups_json", "TEXT DEFAULT '[]'")
+        connection.execute(
+            """
+            UPDATE inhouse_sessions
+            SET team_groups_json = '[]'
+            WHERE guild_id = ? AND session_id = ?
+            """,
+            (guild_id, session_id),
         )
         connection.commit()
     finally:
         connection.close()
 
-
-def add_session_team_group(
+def set_session_lobby_message(
     guild_id: int,
     session_id: int,
-    user_ids: list[int],
-) -> tuple[bool, str, list[list[int]]]:
-    """선택한 2~5명을 하나의 같은 팀 그룹으로 묶습니다. 기존 다른 그룹에 속해 있던 인원은 새 그룹으로 이동합니다."""
-    clean_ids = []
-    for uid in user_ids:
-        uid_int = int(uid)
-        if uid_int not in clean_ids:
-            clean_ids.append(uid_int)
-
-    if len(clean_ids) < 2 or len(clean_ids) > 5:
-        return (
-            False,
-            "같은 팀으로 묶을 인원은 **최소 2명 ~ 최대 5명**이어야 합니다.",
-            get_session_team_groups(guild_id, session_id),
-        )
-
-    existing = get_session_team_groups(guild_id, session_id)
-    new_groups: list[list[int]] = []
-
-    for grp in existing:
-        rem = [u for u in grp if u not in clean_ids]
-        if len(rem) >= 2:
-            new_groups.append(rem)
-
-    new_groups.append(clean_ids)
-    save_session_team_groups(guild_id, session_id, new_groups)
-    return (
-        True,
-        f"선택한 **{len(clean_ids)}명**이 같은 팀 그룹으로 설정되었습니다.",
-        new_groups,
-    )
-
-
-def clear_session_team_groups(guild_id: int, session_id: int) -> None:
-    save_session_team_groups(guild_id, session_id, [])
-
-
-# =====================================================================
-# 글로벌 개인 내전 전적 (서버 무관 누적) 조회 / 기록 / 초기화
-# =====================================================================
-
-def get_global_user_inhouse_stats(discord_user_id: int, game: str) -> dict:
-    """특정 유저의 게임별 글로벌 내전 통산 전적(전체 / 윗밸 / 황밸 / 아랫밸)을 반환합니다."""
+    channel_id: int,
+    message_id: int,
+) -> None:
+    """내전 모집창(로비) 메시지의 채널 ID와 메시지 ID를 세션에 기록합니다."""
     connection = get_connection()
     try:
-        cursor = connection.cursor()
-        cursor.execute(
+        existing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(inhouse_sessions)").fetchall()
+        }
+        if "lobby_channel_id" not in existing_columns:
+            connection.execute(
+                "ALTER TABLE inhouse_sessions ADD COLUMN lobby_channel_id INTEGER"
+            )
+        if "lobby_message_id" not in existing_columns:
+            connection.execute(
+                "ALTER TABLE inhouse_sessions ADD COLUMN lobby_message_id INTEGER"
+            )
+
+        connection.execute(
             """
-            SELECT
-                total_wins,
-                total_losses,
-                upper_wins,
-                upper_losses,
-                even_wins,
-                even_losses,
-                lower_wins,
-                lower_losses
-            FROM global_user_inhouse_stats
-            WHERE discord_user_id = ? AND game = ?
+            UPDATE inhouse_sessions
+            SET lobby_channel_id = ?,
+                lobby_message_id = ?,
+                updated_at = ?
+            WHERE guild_id = ?
+              AND session_id = ?
             """,
-            (int(discord_user_id), str(game).lower()),
+            (
+                channel_id,
+                message_id,
+                datetime.now(timezone.utc).isoformat(),
+                guild_id,
+                session_id,
+            ),
         )
-        row = cursor.fetchone()
+        connection.commit()
+    finally:
+        connection.close()
+
+# =========================================================
+# 글로벌 개인 내전 전적 (서버 이동/신규 등록 시에도 영구 유지)
+# =========================================================
+
+def get_global_user_inhouse_stats(
+    discord_user_id: int,
+    game: str,
+) -> dict:
+    """특정 유저의 글로벌 내전 전적(전체 및 윗밸/황밸/아랫밸 상대 승패)을 조회합니다."""
+    connection = get_connection()
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_user_inhouse_stats (
+                discord_user_id INTEGER NOT NULL,
+                game TEXT NOT NULL,
+                total_wins INTEGER NOT NULL DEFAULT 0,
+                total_losses INTEGER NOT NULL DEFAULT 0,
+                upper_wins INTEGER NOT NULL DEFAULT 0,
+                upper_losses INTEGER NOT NULL DEFAULT 0,
+                even_wins INTEGER NOT NULL DEFAULT 0,
+                even_losses INTEGER NOT NULL DEFAULT 0,
+                lower_wins INTEGER NOT NULL DEFAULT 0,
+                lower_losses INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (discord_user_id, game)
+            )
+            """
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM global_user_inhouse_stats
+            WHERE discord_user_id = ?
+              AND game = ?
+            """,
+            (int(discord_user_id), game),
+        ).fetchone()
+
         if row is None:
             return {
+                "discord_user_id": int(discord_user_id),
+                "game": game,
                 "total_wins": 0,
                 "total_losses": 0,
                 "upper_wins": 0,
@@ -1808,6 +2238,7 @@ def get_global_user_inhouse_stats(discord_user_id: int, game: str) -> dict:
                 "lower_wins": 0,
                 "lower_losses": 0,
             }
+
         return dict(row)
     finally:
         connection.close()
@@ -1817,51 +2248,70 @@ def record_global_user_inhouse_result(
     game: str,
     player_records: list[dict],
 ) -> None:
-    """세트 종료 시 참가자별 승/패 및 밸런스 구도('윗밸', '황밸', '아랫밸')를 글로벌 전적에 누적합니다."""
-    game_key = str(game).lower()
+    """
+    세트 승패가 결정될 때 참가자 개개인의 승패 및 밸런스(윗밸/황밸/아랫밸 상대) 전적을 누적 기록합니다.
+    player_records 항목 예시:
+    {"discord_user_id": 123, "is_win": True, "matchup_type": "윗밸"}
+    """
     connection = get_connection()
     try:
-        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_user_inhouse_stats (
+                discord_user_id INTEGER NOT NULL,
+                game TEXT NOT NULL,
+                total_wins INTEGER NOT NULL DEFAULT 0,
+                total_losses INTEGER NOT NULL DEFAULT 0,
+                upper_wins INTEGER NOT NULL DEFAULT 0,
+                upper_losses INTEGER NOT NULL DEFAULT 0,
+                even_wins INTEGER NOT NULL DEFAULT 0,
+                even_losses INTEGER NOT NULL DEFAULT 0,
+                lower_wins INTEGER NOT NULL DEFAULT 0,
+                lower_losses INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (discord_user_id, game)
+            )
+            """
+        )
+
+        current_time = datetime.now(timezone.utc).isoformat()
+
         for rec in player_records:
             uid = rec.get("discord_user_id", rec.get("user_id"))
             if uid is None:
                 continue
             uid = int(uid)
-            # 자동 채우기 테스트 봇(900000000000000000 이상)은 통산 전적 기록 제외
-            if uid >= 900000000000000000:
+            # 가상 테스트봇(900000000000000000번대)은 전적 기록에서 제외하려면 아래 조건 유지 (원치 않으면 주석 처리 가능)
+            if 900000000000000000 <= uid <= 900000000000000999:
                 continue
 
             is_win = bool(rec.get("is_win"))
-            matchup = str(rec.get("matchup_type") or "황밸")
+            matchup_type = str(rec.get("matchup_type") or "황밸")
 
             t_win = 1 if is_win else 0
             t_loss = 0 if is_win else 1
 
-            u_win = 1 if (matchup == "윗밸" and is_win) else 0
-            u_loss = 1 if (matchup == "윗밸" and not is_win) else 0
+            u_win = 1 if (is_win and matchup_type == "윗밸") else 0
+            u_loss = 1 if (not is_win and matchup_type == "윗밸") else 0
 
-            e_win = 1 if (matchup == "황밸" and is_win) else 0
-            e_loss = 1 if (matchup == "황밸" and not is_win) else 0
+            e_win = 1 if (is_win and matchup_type == "황밸") else 0
+            e_loss = 1 if (not is_win and matchup_type == "황밸") else 0
 
-            l_win = 1 if (matchup == "아랫밸" and is_win) else 0
-            l_loss = 1 if (matchup == "아랫밸" and not is_win) else 0
+            l_win = 1 if (is_win and matchup_type == "아랫밸") else 0
+            l_loss = 1 if (not is_win and matchup_type == "아랫밸") else 0
 
-            cursor.execute(
+            connection.execute(
                 """
                 INSERT INTO global_user_inhouse_stats (
-                    discord_user_id,
-                    game,
-                    total_wins,
-                    total_losses,
-                    upper_wins,
-                    upper_losses,
-                    even_wins,
-                    even_losses,
-                    lower_wins,
-                    lower_losses,
+                    discord_user_id, game,
+                    total_wins, total_losses,
+                    upper_wins, upper_losses,
+                    even_wins, even_losses,
+                    lower_wins, lower_losses,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(discord_user_id, game) DO UPDATE SET
                     total_wins = total_wins + excluded.total_wins,
                     total_losses = total_losses + excluded.total_losses,
@@ -1871,22 +2321,22 @@ def record_global_user_inhouse_result(
                     even_losses = even_losses + excluded.even_losses,
                     lower_wins = lower_wins + excluded.lower_wins,
                     lower_losses = lower_losses + excluded.lower_losses,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = excluded.updated_at
                 """,
                 (
-                    uid,
-                    game_key,
-                    t_win,
-                    t_loss,
-                    u_win,
-                    u_loss,
-                    e_win,
-                    e_loss,
-                    l_win,
-                    l_loss,
+                    uid, game,
+                    t_win, t_loss,
+                    u_win, u_loss,
+                    e_win, e_loss,
+                    l_win, l_loss,
+                    current_time,
                 ),
             )
+
         connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
@@ -1895,102 +2345,66 @@ def reset_global_user_inhouse_stats(
     discord_user_id: int | None = None,
     game: str | None = None,
 ) -> int:
-    """글로벌 개인 내전 전적을 초기화(삭제)하고 초기화된 행 수를 반환합니다."""
+    """
+    글로벌 내전 전적을 초기화(삭제)하고 삭제된 행 수를 반환합니다.
+    - discord_user_id가 지정되면 해당 유저만, None이면 전체 유저 초기화
+    - game이 'lol' 또는 'valorant'면 해당 게임만, None이거나 'all'이면 전체 게임 초기화
+    """
     connection = get_connection()
     try:
-        cursor = connection.cursor()
-        game_key = str(game).lower() if game else "all"
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_user_inhouse_stats (
+                discord_user_id INTEGER NOT NULL,
+                game TEXT NOT NULL,
+                total_wins INTEGER NOT NULL DEFAULT 0,
+                total_losses INTEGER NOT NULL DEFAULT 0,
+                upper_wins INTEGER NOT NULL DEFAULT 0,
+                upper_losses INTEGER NOT NULL DEFAULT 0,
+                even_wins INTEGER NOT NULL DEFAULT 0,
+                even_losses INTEGER NOT NULL DEFAULT 0,
+                lower_wins INTEGER NOT NULL DEFAULT 0,
+                lower_losses INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (discord_user_id, game)
+            )
+            """
+        )
 
-        if discord_user_id is not None and game_key in ("lol", "valorant"):
-            cursor.execute(
+        target_game = None if (game is None or game == "all") else game.lower()
+
+        if discord_user_id is not None and target_game is not None:
+            cursor = connection.execute(
                 """
                 DELETE FROM global_user_inhouse_stats
                 WHERE discord_user_id = ? AND game = ?
                 """,
-                (int(discord_user_id), game_key),
+                (int(discord_user_id), target_game),
             )
         elif discord_user_id is not None:
-            cursor.execute(
+            cursor = connection.execute(
                 """
                 DELETE FROM global_user_inhouse_stats
                 WHERE discord_user_id = ?
                 """,
                 (int(discord_user_id),),
             )
-        elif game_key in ("lol", "valorant"):
-            cursor.execute(
+        elif target_game is not None:
+            cursor = connection.execute(
                 """
                 DELETE FROM global_user_inhouse_stats
                 WHERE game = ?
                 """,
-                (game_key,),
+                (target_game,),
             )
         else:
-            cursor.execute("DELETE FROM global_user_inhouse_stats")
+            cursor = connection.execute(
+                """
+                DELETE FROM global_user_inhouse_stats
+                """
+            )
 
-        deleted_count = cursor.rowcount
         connection.commit()
-        return deleted_count
+        return cursor.rowcount
     finally:
         connection.close()
-
-# =====================================================================
-# [호환성 보강] lol_civilwar.py / val_civilwar.py 연동용 래퍼 함수
-# =====================================================================
-
-def update_participant_positions(
-    guild_id: int,
-    session_id: int,
-    discord_user_id: int,
-    preferred_position: str | None = None,
-    sub_position: str | None = None,
-) -> tuple[bool, str]:
-    """참가자의 주 포지션 또는 부 포지션을 변경합니다."""
-    if preferred_position is not None:
-        return update_inhouse_participant_position(
-            guild_id=guild_id,
-            session_id=session_id,
-            discord_user_id=discord_user_id,
-            new_position=preferred_position,
-        )
-    if sub_position is not None:
-        return update_inhouse_participant_sub_position(
-            guild_id=guild_id,
-            session_id=session_id,
-            discord_user_id=discord_user_id,
-            new_sub_position=sub_position,
-        )
-    return False, "변경할 포지션 정보가 없습니다."
-
-
-def close_inhouse_session(
-    guild_id: int,
-    civilwar_number: int | None = None,
-    game: str | None = None,
-    requester_user_id: int | None = None,
-    allow_adminoverride: bool = True,
-    session_id: int | None = None,
-) -> tuple[bool, str, dict | None]:
-    """내전 세션을 종료(삭제)하고 종료된 세션 정보를 반환합니다."""
-    session = None
-    if session_id is not None:
-        session = get_inhouse_session_by_id(guild_id, session_id)
-    elif civilwar_number is not None:
-        session = get_inhouse_session_by_number(guild_id, civilwar_number, game)
-
-    if not session:
-        return False, "해당 내전 세션을 찾을 수 없거나 이미 종료되었습니다.", None
-
-    if requester_user_id is not None and not allow_adminoverride:
-        if int(session.get("organizer_user_id", 0)) != int(requester_user_id):
-            return False, "내전 주최자 또는 관리자만 내전을 종료할 수 있습니다.", None
-
-    closed_copy = dict(session)
-    closed_copy["status"] = "closed"
-
-    delete_inhouse_session(
-        guild_id=guild_id,
-        civilwar_number=int(session["civilwar_number"]),
-        game=str(session["game"]),
-    )
-    return True, f"내전(match #{session['civilwar_number']})이 종료되었습니다.", closed_copy
