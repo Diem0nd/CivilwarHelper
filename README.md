@@ -1,4 +1,39 @@
-# CivilwarHelper
+# 🎮 CivilwarHelper (LoL & VALORANT In-house Discord Bot)
+
+**CivilwarHelper** is a free-to-use Discord bot designed to help League of Legends and VALORANT communities organize friendly 5v5 custom matches (in-houses). It provides interactive recruitment lobbies, role/position selection, and balanced team distribution based on official Riot rank tiers.
+
+---
+
+## 📺 Video Demonstration (For Riot Games API Review)
+Since reviewers do not join Discord servers during the review process, please watch our public demonstration video below showing the full user flow and UI interactions:
+
+👉 **[Watch Demo Video on YouTube](https://youtu.be/td8K6VnwtHg)**
+
+---
+
+## 🛠️ Commands Demonstrated in the Video
+
+* **`/register` — Account Registration (RSO / OAuth to be implemented)**
+  * Links a user's Discord account with their Riot ID for custom game participation.
+  * *Note: Upon VALORANT Production API Key approval, this command will be updated within 30 days to use Riot Sign-On (RSO) OAuth so players can securely authenticate and opt-in.*
+* **`/unregister` — Account Unlink & Data Removal (Opt-out)**
+  * Unlinks the registered Riot account and removes the user's profile data from the bot. Allows users to fix input errors or opt-out of data sharing at any time.
+* **`/create-inhouse` — Friendly 5v5 Custom Match Lobby**
+  * Creates an interactive recruitment lobby to gather 10 players, select preferred roles/positions, and start a balanced 5v5 custom match with friends.
+* **`/lolprofile` — League of Legends Profile Summary**
+  * Displays registered users' League of Legends profiles, including official rank tiers, preferred positions, and in-house participation history.
+* **`/valprofile` — VALORANT Profile Summary**
+  * Displays registered users' VALORANT profiles, including official rank tiers, preferred agent roles, and in-house participation history.
+
+---
+
+## 🔒 Riot Games API Policy & RSO Compliance
+* **Free & Community-Focused**: 100% free to use with no commercial charge or locked features.
+* **No Alternative MMR/ELO**: We do not create custom skill rating systems or leaderboards. Official rank tiers are strictly referenced to balance teams for friendly 5v5 custom lobbies.
+* **Player Privacy (RSO)**: We will integrate Riot Sign-On (OAuth) prior to displaying VALORANT player stats in production, ensuring explicit player opt-in.
+
+---
+*CivilwarHelper isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties.*
 
 롤 / 발로란트 내전 모집, 팀 밸런싱, 전적 기록용 디스코드 봇. (Python 3.10+)
 
