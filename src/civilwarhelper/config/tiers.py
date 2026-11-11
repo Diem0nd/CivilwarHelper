@@ -1,6 +1,6 @@
 # 밸런싱용 티어 기본 점수
 TIER_BASE_SCORE = {
-    "UNRANKED": 10.0,
+    "UNRANKED": 12.0,
     "IRON": 4.0,
     "BRONZE": 8.0,
     "SILVER": 12.0,
