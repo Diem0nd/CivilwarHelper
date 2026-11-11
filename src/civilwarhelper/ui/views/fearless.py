@@ -3,12 +3,12 @@ import discord
 from civilwarhelper import db as database
 from civilwarhelper.config.games import draft_rule_name
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
-
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 class FearlessInputModal(discord.ui.Modal):
     def __init__(self, team_view: "InhouseTeamManageView", target_set: int):
         self.is_lol = team_view.session["game"] == "lol"
-        title = f"🔥 {target_set}세트 피어리스 챔피언 입력" if self.is_lol else f"🗺️ {target_set}세트 맵 밴 입력"
+        title = f"{get_custom_emoji('AFearless', '🔥')} {target_set}세트 피어리스 챔피언 입력" if self.is_lol else f"{get_custom_emoji('AFearless', '🗺️')} {target_set}세트 맵 밴 입력"
         super().__init__(title=title)
         self.team_view = team_view
         self.target_set = target_set

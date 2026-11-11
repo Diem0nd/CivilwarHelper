@@ -2,6 +2,7 @@ import discord
 
 from civilwarhelper.services.team_names import SESSION_CUSTOM_TEAM_NAMES, recommend_team_names_by_balance
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class TeamNameConfigModal(discord.ui.Modal, title="🏷️ 팀 이름 설정 (자동 추천 포함)"):
@@ -68,7 +69,7 @@ class SetTeamNameButton(discord.ui.Button):
         view: InhouseTeamManageView = self.view  # type: ignore
         if interaction.user.id != view.organizer_user_id:
             await interaction.response.send_message(
-                "❌ 팀 이름 설정은 **내전 주최자**만 할 수 있습니다.",
+                f"{get_custom_emoji('ALose', '❌')} 팀 이름 설정은 **내전 주최자**만 할 수 있습니다.",
                 ephemeral=True,
             )
             return

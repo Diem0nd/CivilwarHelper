@@ -1,6 +1,6 @@
 from civilwarhelper import db as database
 from civilwarhelper.ui.formatting.profile import _format_short_position, _format_tier_with_custom_emoji
-
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 def format_inhouse_session_detail(
     session: dict,
@@ -19,7 +19,7 @@ def format_inhouse_session_detail(
         status_line = f"상태 : **{closed_reason}**"
     else:
         status_badge = "🟢 모집 중" if count < 10 else "🌕 모집 완료 (시작 대기 중)"
-        status_header = f"📢 **현재 civilwar #{civilwar_num} ({game_label}) 참가자**"
+        status_header = f"{get_custom_emoji('ACivilwar', '📢')} **현재 civilwar #{civilwar_num} ({game_label}) 참가자**"
         status_line = f"상태 : {status_badge}"
 
     lines = [
@@ -33,7 +33,7 @@ def format_inhouse_session_detail(
             f"`그룹{i}`(" + ", ".join(f"<@{u}>" for u in g) + ")"
             for i, g in enumerate(team_groups, 1)
         ]
-        lines.append("🤝 **같은 팀 예약** : " + " / ".join(group_strs))
+        lines.append("🙌 **같은 팀 예약** : " + " / ".join(group_strs))
 
     if participants:
         lines.append("")
@@ -71,7 +71,7 @@ def format_inhouse_session_detail(
                     f"({custom_prefix}티어:{comp_tier} | **{pos_display}**)"
                 )
     elif not is_closed:
-        lines.append("\n*아직 참가자가 없습니다. 아래 [🎮 내전 참가] 버튼을 눌러 참여하세요!*")
+        lines.append(f"\n{get_custom_emoji('AThinking', 'ℹ️')} 아직 참가자가 없습니다. 아래 [🎮 내전 참가] 버튼을 눌러 참여하세요!*")
 
     result = "\n".join(lines)
     # 디스코드 메시지 2000자 제한 방어

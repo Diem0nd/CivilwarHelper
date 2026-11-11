@@ -2,6 +2,7 @@ import discord
 
 from civilwarhelper import db as database
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class InhouseListSelect(discord.ui.Select):
@@ -29,7 +30,7 @@ class InhouseListSelect(discord.ui.Select):
 
         if session is None:
             await interaction.response.edit_message(
-                content="해당 내전을 찾을 수 없거나 이미 종료되었습니다.",
+                content=f"{get_custom_emoji('AThinking', '❌')} 해당 내전을 찾을 수 없거나 이미 종료되었습니다.",
                 view=None,
             )
             return

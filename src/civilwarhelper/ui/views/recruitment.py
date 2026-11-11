@@ -6,6 +6,7 @@ from civilwarhelper.services.balance import assign_teams_with_balance
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.formatting.profile import _format_short_position
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class OrganizerAddRegisteredSelect(discord.ui.Select):
@@ -129,7 +130,7 @@ class RecruitmentKickParticipantSelect(discord.ui.Select):
             return
 
         await view.refresh_lobby_message(interaction)
-        await interaction.followup.send(f"✅ <@{target_user_id}> 님을 내전 참가자 목록에서 제외했습니다.", ephemeral=True)
+        await interaction.followup.send(f"{get_custom_emoji('ACharting', '✅')} <@{target_user_id}> 님을 내전 참가자 목록에서 제외했습니다.", ephemeral=True)
 
 
 class RecruitmentTeamGroupSelect(discord.ui.Select):
@@ -201,7 +202,7 @@ class RecruitmentTeamGroupSelect(discord.ui.Select):
         selected_uids = [int(v) for v in self.values if v != "none"]
         if len(selected_uids) < 2:
             await interaction.followup.send(
-                "⚠️ 같은 팀으로 묶으려면 드롭다운에서 **한 번에 2명 이상(최대 5명)**을 함께 체크해 주세요!",
+                f"{get_custom_emoji('ALose', '⚠️')} 같은 팀으로 묶으려면 드롭다운에서 **한 번에 2명 이상(최대 5명)**을 함께 체크해 주세요!",
                 ephemeral=True,
             )
             return
@@ -397,14 +398,14 @@ class InhouseRecruitmentView(discord.ui.View):
 
         session = database.get_inhouse_session_by_id(self.guild_id, self.session_id)
         if session is None:
-            await interaction.edit_original_response(content="🛑 **[모집 종료]** 이미 종료된 내전입니다.", view=None)
+            await interaction.edit_original_response(content=f"{get_custom_emoji('ALose', '🛑')} **[모집 종료]** 이미 종료된 내전입니다.", view=None)
             return
 
         is_organizer = interaction.user.id == session["organizer_user_id"]
         is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
         if not (is_organizer or is_admin):
             await interaction.followup.send(
-                "내전 모집 취소는 **주최자**(또는 서버 관리자)만 할 수 있습니다.",
+                f"{get_custom_emoji('ALose', '❌')} 내전 모집 취소는 **주최자**(또는 서버 관리자)만 할 수 있습니다.",
                 ephemeral=True,
             )
             return

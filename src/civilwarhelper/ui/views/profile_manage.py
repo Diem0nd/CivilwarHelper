@@ -9,6 +9,7 @@ from civilwarhelper.config.tiers import LOL_TIER_NAMES_ORDERED, VAL_TIER_NAMES_O
 from civilwarhelper.riot import client as riot_api
 from civilwarhelper.riot import valorant as riot_valorant
 from civilwarhelper.ui.formatting.profile import format_user_profile_card
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 async def sync_valorant_profile(
@@ -26,12 +27,12 @@ async def sync_valorant_profile(
     except riot_api.RiotAPIError as e:
         if e.status_code is None:
             return (
-                "\n⚠️ 발로란트 API 키가 아직 설정되지 않아 티어를 불러오지 못했습니다. "
-                "`/userprofile`에서 체감 티어와 포지션을 설정하면 내전 밸런스에 반영됩니다."
+                f"{get_custom_emoji('ALose', '⚠️')} 발로란트 API 키가 아직 설정되지 않아 티어를 불러오지 못했습니다. "
+                f"`/userprofile`에서 체감 티어와 포지션을 설정하면 내전 밸런스에 반영됩니다."
             )
-        return f"\n⚠️ Riot API 조회 중 오류가 발생했습니다: {e}"
+        return f"\n{get_custom_emoji('ALose', '⚠️')} Riot API 조회 중 오류가 발생했습니다: {e}"
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        return f"\n⚠️ Riot API 조회 중 오류가 발생했습니다: {e}"
+        return f"\n{get_custom_emoji('ALose', '⚠️')} Riot API 조회 중 오류가 발생했습니다: {e}"
 
     database.update_profile_api_data(
         guild_id=guild_id,
@@ -42,7 +43,7 @@ async def sync_valorant_profile(
         main_position=api_data["main_position"],
     )
     return (
-        f"\n📊 **Riot API 연동 완료** — "
+        f"\n{get_custom_emoji('ACharting', '📊')} **Riot API 연동 완료** — "
         f"경쟁전: `{api_data['competitive_tier']}` / "
         f"주 역할: `{api_data['main_position']}`"
     )
@@ -68,7 +69,7 @@ class RiotIdRegisterModal(discord.ui.Modal):
         raw = self.riot_id_tag_input.value.strip()
         if "#" not in raw:
             await interaction.response.send_message(
-                "❌ 반드시 `#`을 포함하여 **`라이엇ID#태그`** 형식으로 입력해 주세요. (예: `Hide on bush#KR1`)",
+                f"{get_custom_emoji('ALose', '❌')} 반드시 `#`을 포함하여 **`라이엇ID#태그`** 형식으로 입력해 주세요. (예: `Hide on bush#KR1`)",
                 ephemeral=True,
             )
             return
@@ -79,7 +80,7 @@ class RiotIdRegisterModal(discord.ui.Modal):
 
         if not riot_id or not tag:
             await interaction.response.send_message(
-                "❌ 라이엇 ID와 태그가 모두 비어있지 않아야 합니다. (예: `Hide on bush#KR1`)",
+                f"{get_custom_emoji('ALose', '❌')} 라이엇 ID와 태그가 모두 비어있지 않아야 합니다. (예: `Hide on bush#KR1`)",
                 ephemeral=True,
             )
             return
@@ -116,13 +117,13 @@ class RiotIdRegisterModal(discord.ui.Modal):
                     main_position=api_data["main_position"],
                 )
                 api_note = (
-                    f"\n📊 **Riot API 연동 완료** — "
+                    f"\n{get_custom_emoji('ACharting', '📊')} **Riot API 연동 완료** — "
                     f"Solo: `{api_data['solo_tier']}` / "
                     f"Flex: `{api_data['flex_tier']}` / "
                     f"주 포지션: `{api_data['main_position']}`"
                 )
             except (riot_api.RiotAPIError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-                api_note = f"\n⚠️ Riot API 조회 중 오류가 발생했습니다: {e}"
+                api_note = f"\n{get_custom_emoji('ALose', '⚠️')} Riot API 조회 중 오류가 발생했습니다: {e}"
         elif self.game_value == "valorant":
             api_note = await sync_valorant_profile(self.guild_id, self.member.id, riot_id, tag)
 

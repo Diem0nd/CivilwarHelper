@@ -6,10 +6,11 @@ from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.lobby import mark_lobby_message_closed, resolve_organizer_target_session, sync_lobby_message_if_exists
 from civilwarhelper.ui.views.inhouse_list import InhouseListView
 from civilwarhelper.ui.views.recruitment import InhouseRecruitmentView
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 @app_commands.command(
-    name="create-inhouse",
+    name="내전생성",
     description="League of Legends 또는 VALORANT 내전 모집 로비를 생성합니다.",
 )
 @app_commands.guild_only()
@@ -82,7 +83,7 @@ async def inhouse_add(
 
 
 @app_commands.command(
-    name="inhouse-transfer",
+    name="주최자양도",
     description="내전 주최자 권한을 다른 멤버에게 양도합니다.",
 )
 @app_commands.guild_only()
@@ -118,10 +119,10 @@ async def inhouse_transfer(
         f"**civilwar #{cw_num}**의 주최자가 {interaction.user.mention} 님에서 {new_organizer.mention} 님으로 변경되었습니다.",
         allowed_mentions=discord.AllowedMentions(users=True),
     )
-
+    await sync_lobby_message_if_exists(interaction.guild, session["session_id"])
 
 @app_commands.command(
-    name="inhouse-list",
+    name="내전목록",
     description="현재 진행 중인 내전 목록과 참가자를 확인합니다.",
 )
 @app_commands.guild_only()
@@ -154,7 +155,7 @@ async def inhouse_list(interaction: discord.Interaction):
 
 
 @app_commands.command(
-    name="end-inhouse",
+    name="내전종료",
     description="진행 중인 내전 세션을 종료합니다.",
 )
 @app_commands.guild_only()
@@ -211,7 +212,7 @@ async def end_inhouse(interaction: discord.Interaction, civilwar_number: int | N
         reason="모집 종료",
     )
     await interaction.response.send_message(
-        f"🛑 **civilwar #{target_session['civilwar_number']}** 내전이 종료되었습니다. (모집 종료 처리 완료)",
+        f"{get_custom_emoji('ACharting', '🛑')} **civilwar #{target_session['civilwar_number']}** 내전이 종료되었습니다. (모집 종료 처리 완료)",
     )
 
 

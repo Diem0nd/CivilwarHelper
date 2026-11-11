@@ -1,6 +1,7 @@
 import discord
 
 from civilwarhelper.ui.formatting.profile import _format_short_position, format_compact_member_profile_line, format_single_member_profile_detail
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class ProfileDirectorySelect(discord.ui.Select):
@@ -123,4 +124,4 @@ class ProfileDirectoryView(discord.ui.View):
             if str(profile["discord_user_id"]) == self.selected_user_id:
                 return f"{header}\n\n{format_single_member_profile_detail(profile, disp_name, self.game)}"
 
-        return f"{header}\n❌ 선택한 유저의 프로필을 찾을 수 없습니다."
+        return f"{header}\n{get_custom_emoji('AThinking', '❌')} 선택한 유저의 프로필을 찾을 수 없습니다."

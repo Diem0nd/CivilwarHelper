@@ -2,11 +2,11 @@ import discord
 from discord import app_commands
 
 from civilwarhelper import db as database
-
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 @app_commands.command(
-    name="resetstats",
-    description="[관리자 전용] 내전 통산 승률 및 밸런스별 전적 기록을 초기화합니다.",
+    name="전적초기화",
+    description="[서버 관리자 전용] 내전 통산 승률 및 밸런스별 전적 기록을 초기화합니다.\n 오류로 인해 전적이 오염되었을 경우에만 사용하시길 권장합니다.",
 )
 @discord.app_commands.default_permissions(administrator=True)
 @discord.app_commands.describe(
@@ -31,7 +31,7 @@ async def resetstats_command(
 
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message(
-            "🚫 이 명령어는 **서버 관리자(Administrator)** 이상의 권한을 가진 사람만 사용할 수 있습니다.",
+            f"{get_custom_emoji('ALose', '🚫')} 이 명령어는 **서버 관리자(Administrator)** 이상의 권한을 가진 사람만 사용할 수 있습니다.",
             ephemeral=True,
         )
         return
@@ -49,7 +49,7 @@ async def resetstats_command(
     target_desc = f"**{member.display_name}**님의" if member is not None else "**모든 유저**의"
 
     await interaction.response.send_message(
-        f"✅ {target_desc} **{game_label}** 내전 전적 기록이 초기화되었습니다. (삭제된 기록: {deleted_count}건)",
+        f"{get_custom_emoji('ACharting', '✅')} {target_desc} **{game_label}** 내전 전적 기록이 초기화되었습니다. (삭제된 기록: {deleted_count}건)",
         ephemeral=True,
     )
 

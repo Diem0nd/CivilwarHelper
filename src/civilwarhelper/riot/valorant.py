@@ -1,3 +1,4 @@
+import asyncio
 import re
 from collections import Counter
 from urllib.parse import quote
@@ -6,9 +7,16 @@ import aiohttp
 
 from civilwarhelper.config.positions import VAL_AGENT_ROLES
 from civilwarhelper.config.tiers import VAL_DIVIDED_TIERS
-from civilwarhelper.riot.client import ACCOUNT_ROUTING_URL, RiotAPIError, _get_json, get_account_by_riot_id
+from civilwarhelper.riot.client import (
+    ACCOUNT_ROUTING_URL,
+    RiotAPIError,
+    _get_json,
+    get_account_by_riot_id,
+    get_api_key,
+)
 
 VAL_API_KEY_ENV = "RIOT_VAL_API_KEY"
+HENRIK_BASE_URL = "https://api.henrikdev.xyz"
 DEFAULT_SHARD = "kr"
 RECENT_MATCH_COUNT = 10
 
@@ -100,11 +108,109 @@ def summarize_matches(matches: list[dict], puuid: str, agent_names: dict[str, st
     return comp_tier, pick_main_role(roles)
 
 
+async def _get_henrik_json(
+    session: aiohttp.ClientSession,
+    path: str,
+    params: dict | None = None,
+) -> dict:
+    api_key = get_api_key(VAL_API_KEY_ENV).strip()
+    url = f"{HENRIK_BASE_URL}{path}"
+    headers = {"Authorization": api_key, "Accept": "application/json"}
+
+    for attempt in range(3):
+        async with session.get(url, params=params, headers=headers) as resp:
+            if resp.status == 200:
+                return await resp.json(content_type=None)
+
+            if resp.status == 429 and attempt < 2:
+                await asyncio.sleep(2.0)
+                continue
+
+            if resp.status in (401, 403):
+                raise RiotAPIError("HenrikDev 발로란트 API 키가 유효하지 않거나 만료되었습니다.", resp.status)
+            if resp.status == 404:
+                raise RiotAPIError("발로란트 계정 또는 전적 데이터를 찾을 수 없습니다.", 404)
+            if resp.status == 429:
+                raise RiotAPIError("발로란트 API 요청 한도 초과. 잠시 후 다시 시도하세요.", 429)
+
+            raise RiotAPIError(f"발로란트 API 오류 (HTTP {resp.status})", resp.status)
+
+    raise RiotAPIError("발로란트 API 요청 실패")
+
+
+async def _fetch_val_profile_data_henrik(
+    session: aiohttp.ClientSession,
+    game_name: str,
+    tagline: str,
+) -> dict:
+    enc_name = quote(game_name, safe="")
+    enc_tag = quote(tagline, safe="")
+
+    # 1. 계정 조회 (puuid 및 지역 확인)
+    acc_resp = await _get_henrik_json(session, f"/valorant/v1/account/{enc_name}/{enc_tag}")
+    acc_data = acc_resp.get("data") or {}
+    puuid = acc_data.get("puuid")
+    region = acc_data.get("region") or DEFAULT_SHARD
+    if not puuid:
+        raise RiotAPIError("발로란트 계정의 PUUID를 찾을 수 없습니다.", 404)
+
+    # 2. 경쟁전 티어(MMR) 조회
+    comp_tier = "Unranked"
+    try:
+        mmr_resp = await _get_henrik_json(session, f"/valorant/v2/mmr/{region}/{enc_name}/{enc_tag}")
+        mmr_data = mmr_resp.get("data") or {}
+        current_data = mmr_data.get("current_data") or {}
+        tier_num = current_data.get("currenttier")
+        if tier_num:
+            comp_tier = competitive_tier_name(int(tier_num))
+    except RiotAPIError as e:
+        if e.status_code != 404:
+            raise
+
+    # 3. 최근 매치 기준 주 포지션(역할군) 추출
+    roles: list[str] = []
+    try:
+        matches_resp = await _get_henrik_json(
+            session,
+            f"/valorant/v3/matches/{region}/{enc_name}/{enc_tag}",
+            params={"size": RECENT_MATCH_COUNT},
+        )
+        for m in matches_resp.get("data") or []:
+            all_players = (m.get("players") or {}).get("all_players") or []
+            me = next((p for p in all_players if p.get("puuid") == puuid), None)
+            if not me:
+                continue
+
+            if comp_tier == "Unranked":
+                meta = m.get("metadata") or {}
+                if str(meta.get("mode_id", "")).lower() == "competitive":
+                    comp_tier = competitive_tier_name(me.get("currenttier"))
+
+            role = agent_role(me.get("character"))
+            if role:
+                roles.append(role)
+    except RiotAPIError as e:
+        if e.status_code != 404:
+            raise
+
+    return {
+        "puuid": puuid,
+        "competitive_tier": comp_tier,
+        "main_position": pick_main_role(roles),
+    }
+
+
 async def fetch_val_profile_data(
     session: aiohttp.ClientSession,
     game_name: str,
     tagline: str,
 ) -> dict:
+    api_key = get_api_key(VAL_API_KEY_ENV).strip()
+    # HenrikDev API 키(HDEV-...)를 사용하거나 RGAPI-로 시작하지 않는 경우 HenrikDev API 사용
+    if api_key.upper().startswith("HDEV-") or not api_key.upper().startswith("RGAPI-"):
+        return await _fetch_val_profile_data_henrik(session, game_name, tagline)
+
+    # 기존 라이엇 공식 API 로직 (추후 라이엇 Production 키 발급 시 자동 호환)
     account = await get_account_by_riot_id(session=session, game_name=game_name, tagline=tagline)
     puuid = account["puuid"]
 

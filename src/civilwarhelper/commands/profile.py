@@ -11,10 +11,11 @@ from civilwarhelper.riot import valorant as riot_valorant
 from civilwarhelper.ui.formatting.profile import format_user_profile_card, get_display_nickname
 from civilwarhelper.ui.views.profile_directory import ProfileDirectoryView
 from civilwarhelper.ui.views.profile_manage import RiotIdRegisterModal, UserProfileManageView
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 @app_commands.command(
-    name="register",
+    name="등록",
     description="서버 멤버의 League of Legends 또는 VALORANT 프로필을 등록하거나 수정합니다.",
 )
 @app_commands.guild_only()
@@ -61,24 +62,24 @@ async def _open_profile_directory(interaction: discord.Interaction, game: str, e
     await interaction.response.send_message(content=view.render_content(), view=view, ephemeral=True)
 
 
-@app_commands.command(name="lolprofile", description="등록된 League of Legends 멤버의 프로필을 드롭다운으로 조회합니다.")
+@app_commands.command(name="롤프로필", description="등록된 League of Legends 멤버의 프로필을 드롭다운으로 조회합니다.")
 @app_commands.guild_only()
 async def lolprofile(interaction: discord.Interaction):
     await _open_profile_directory(
-        interaction, "lol", "등록된 League of Legends 프로필이 없습니다. `/register`로 먼저 등록해 주세요."
+        interaction, "lol", "등록된 League of Legends 프로필이 없습니다. `/등록`로 먼저 등록해 주세요."
     )
 
 
-@app_commands.command(name="valprofile", description="등록된 VALORANT 멤버의 프로필을 드롭다운으로 조회합니다.")
+@app_commands.command(name="발로프로필", description="등록된 VALORANT 멤버의 프로필을 드롭다운으로 조회합니다.")
 @app_commands.guild_only()
 async def valprofile(interaction: discord.Interaction):
     await _open_profile_directory(
-        interaction, "valorant", "등록된 VALORANT 프로필이 없습니다. `/register`로 먼저 등록해 주세요."
+        interaction, "valorant", "등록된 VALORANT 프로필이 없습니다. `/등록`로 먼저 등록해 주세요."
     )
 
 
 @app_commands.command(
-    name="refreshlol",
+    name="롤갱신",
     description="등록된 League of Legends 프로필의 랭크와 주 포지션을 Riot에서 다시 불러옵니다.",
 )
 @app_commands.guild_only()
@@ -148,7 +149,7 @@ async def refreshlol(interaction: discord.Interaction):
 
 
 @app_commands.command(
-    name="refreshval",
+    name="발로갱신",
     description="등록된 VALORANT 프로필의 경쟁전 티어와 주 역할을 Riot에서 다시 불러옵니다.",
 )
 @app_commands.guild_only()
@@ -199,14 +200,14 @@ async def refreshval(interaction: discord.Interaction):
                     failed_profiles.append(profile["discord_nickname"])
     except riot_api.RiotAPIError:
         await interaction.followup.send(
-            "발로란트 API 키(`RIOT_VAL_API_KEY`)가 설정되지 않았습니다. 봇 관리자에게 문의해 주세요.",
+            f"{get_custom_emoji('ALose', '🚫')} 발로란트 API 키(`RIOT_VAL_API_KEY`)가 설정되지 않았습니다. 봇 관리자에게 문의해 주세요.",
             ephemeral=True,
         )
         return
 
     lines = [
-        f"갱신한 VALORANT 프로필: {len(updated_profiles)}개",
-        f"실패한 프로필: {len(failed_profiles)}개",
+        f"{get_custom_emoji('ACharting', '✅')} 갱신한 VALORANT 프로필: {len(updated_profiles)}개",
+        f"{get_custom_emoji('ALose', '🚫')} 실패한 프로필: {len(failed_profiles)}개",
     ]
     if failed_profiles:
         lines.append("")
@@ -220,8 +221,8 @@ async def refreshval(interaction: discord.Interaction):
 
 
 @app_commands.command(
-    name="unregister",
-    description="등록된 게임 프로필(register 정보)을 삭제합니다. 다른 유저가 잘못 등록된 경우 대상을 지정해 삭제할 수 있습니다.",
+    name="등록해제",
+    description="등록된 게임 프로필을 삭제합니다. 다른 유저가 잘못 등록된 경우 대상을 지정해 삭제할 수 있습니다.",
 )
 @app_commands.guild_only()
 @app_commands.describe(
@@ -270,19 +271,19 @@ async def unregister_command(
 
     if deleted_count > 0:
         await interaction.response.send_message(
-            f"✅ {target_user.mention} 님의 **{game_label}** 등록 프로필({deleted_count}건)이 삭제되었습니다.\n"
-            "이제 `/register` 명령어로 올바른 계정을 다시 등록할 수 있습니다.",
+            f"{get_custom_emoji('ACharting', '✅')} {target_user.mention} 님의 **{game_label}** 등록 프로필({deleted_count}건)이 삭제되었습니다.\n"
+            "이제 `/등록` 명령어로 올바른 계정을 다시 등록할 수 있습니다.",
             ephemeral=True,
         )
     else:
         await interaction.response.send_message(
-            f"ℹ️ {target_user.mention} 님은 현재 **{game_label}**에 등록된 프로필이 없습니다.",
+            f"{get_custom_emoji('AThinking', 'ℹ️')} {target_user.mention} 님은 현재 **{game_label}**에 등록된 프로필이 없습니다.",
             ephemeral=True,
         )
 
 
 @app_commands.command(
-    name="userprofile",
+    name="프로필",
     description="유저의 게임 프로필(실제/체감 티어 및 선호 포지션)을 확인하고 권한이 있으면 수정합니다.",
 )
 @discord.app_commands.describe(
@@ -311,8 +312,8 @@ async def userprofile_command(
     profile = database.get_user_profile(interaction.guild_id, target_member.id, selected_game)
     if profile is None:
         await interaction.response.send_message(
-            f"❌ **{target_member.display_name}**님은 아직 **{game_label}** 프로필이 등록되어 있지 않습니다.\n"
-            "먼저 `/register` 명령어로 프로필을 등록해 주세요.",
+            f"{get_custom_emoji('ALose', '❌')} **{target_member.display_name}**님은 아직 **{game_label}** 프로필이 등록되어 있지 않습니다.\n"
+            "먼저 `/등록` 명령어로 프로필을 등록해 주세요.",
             ephemeral=True,
         )
         return

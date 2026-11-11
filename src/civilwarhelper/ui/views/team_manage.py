@@ -7,6 +7,7 @@ from civilwarhelper.services.match_stats import _record_participants_match_stats
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.formatting.profile import _format_short_position
+from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class BalancePositionSelect(discord.ui.Select):
@@ -30,7 +31,7 @@ class BalancePositionSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         view: InhouseTeamManageView = self.view  # type: ignore
         if interaction.user.id != view.organizer_user_id:
-            await interaction.response.send_message("이 내전의 주최자만 조작할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message(f"{get_custom_emoji('ALose', '❌')} 이 내전의 주최자만 조작할 수 있습니다.", ephemeral=True)
             return
 
         view.selected_position = self.values[0]
@@ -50,7 +51,7 @@ class SetBalanceModeButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view: InhouseTeamManageView = self.view  # type: ignore
         if interaction.user.id != view.organizer_user_id:
-            await interaction.response.send_message("이 내전의 주최자만 조작할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message(f"{get_custom_emoji('ALose', '❌')} 이 내전의 주최자만 조작할 수 있습니다.", ephemeral=True)
             return
 
         view.balance_settings[view.selected_position] = self.mode_label

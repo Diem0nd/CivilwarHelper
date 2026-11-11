@@ -25,6 +25,9 @@ class CivilwarHelper(discord.Client):
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
                 print(f"테스트 서버({gid}) 커맨드 동기화 완료")
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            print("글로벌 중복 커맨드 정리 완료")
         else:
             await self.tree.sync()
             print("글로벌 커맨드 동기화 완료")

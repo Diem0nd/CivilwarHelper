@@ -3,6 +3,9 @@ import logging
 
 import discord
 
+from civilwarhelper.ui.emojis import get_custom_emoji
+
+
 RPS_CHOICES = {
     "scissors": {"label": "가위", "emoji": "✌️", "beats": "paper"},
     "rock": {"label": "바위", "emoji": "✊", "beats": "scissors"},
@@ -224,12 +227,12 @@ class RPSGameView(discord.ui.View):
                 )
                 next_view = self
             elif red_pick["beats"] == blue_key:
-                result_line = f"승리! **🟥 RED 진영 (<@{self.red_user.id}>)**"
+                result_line = f"{get_custom_emoji('AWin', '✅')} 승리! **🟥 RED 진영 (<@{self.red_user.id}>)**"
                 self.phase = "DONE"
                 self.stop()
                 next_view = None
             else:
-                result_line = f"승리! **🟦 BLUE 진영 (<@{self.blue_user.id}>)**"
+                result_line = f"{get_custom_emoji('AWin', '✅')} 승리! **🟦 BLUE 진영 (<@{self.blue_user.id}>)**"
                 self.phase = "DONE"
                 self.stop()
                 next_view = None
