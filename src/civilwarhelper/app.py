@@ -1,5 +1,8 @@
 import logging
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import discord
 from discord import app_commands
 
@@ -8,6 +11,7 @@ from civilwarhelper.commands import admin, general, inhouse, profile
 from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, VAL_STANDARD_POSITIONS
 from civilwarhelper.config.settings import DISCORD_TOKEN, TEST_GUILD_IDS
 from civilwarhelper.ui.emojis import load_custom_emojis
+from civilwarhelper.ui.lobby import mark_lobby_message_closed
 from civilwarhelper.ui.views.recruitment import InhouseRecruitmentView
 from civilwarhelper.ui.views.team_manage import InhouseTeamManageView
 
@@ -72,6 +76,50 @@ async def restore_lobby_view(guild: discord.Guild, session: dict) -> None:
     except discord.HTTPException as e:
         logging.debug("로비 뷰 갱신 실패 (session=%s): %s", session_id, e)
 
+async def auto_close_expired_inhouse_sessions() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            now = datetime.now(timezone.utc)
+            for guild in bot.guilds:
+                for session in database.get_active_inhouse_sessions(guild.id):
+                    # 이미 게임이 시작된 내전은 자동 종료하지 않음
+                    if session.get("match_started"):
+                        continue
+
+                    created_at_str = session.get("created_at")
+                    if not created_at_str:
+                        continue
+
+                    try:
+                        created_at = datetime.fromisoformat(created_at_str)
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue
+
+                    # 생성 후 18시간이 지났으면 자동 종료
+                    if now - created_at >= timedelta(hours=18):
+                        session_id = int(session["session_id"])
+                        participants = database.get_inhouse_participants_with_profiles(guild.id, session_id)
+                        deleted = database.delete_inhouse_session(guild.id, session_id)
+                        if deleted:
+                            await mark_lobby_message_closed(
+                                guild=guild,
+                                session=session,
+                                participants=participants,
+                                reason="모집 종료 (18시간 경과 자동 종료)",
+                            )
+                            logging.info(
+                                "18시간 경과로 내전 자동 종료 완료 (guild=%s, civilwar #%s)",
+                                guild.id,
+                                session.get("civilwar_number"),
+                            )
+        except Exception:
+            logging.exception("18시간 경과 내전 자동 종료 작업 중 오류 발생")
+
+        # 5분(300초)마다 반복 확인
+        await asyncio.sleep(3600)
 
 async def on_ready():
     await load_custom_emojis(bot)
@@ -83,6 +131,7 @@ async def on_ready():
                 except Exception:
                     logging.exception("로비 뷰 복원 실패 (session=%s)", session.get("session_id"))
         bot._recruitment_views_registered = True
+        asyncio.create_task(auto_close_expired_inhouse_sessions())
     print(f"로그인 완료: {bot.user}")
 
 

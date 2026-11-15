@@ -8,7 +8,7 @@ from civilwarhelper.app import bot
 ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_COMMANDS = sorted([
-    "핑", "등록", "롤프로필", "발로프로필", "롤갱신", "발로갱신",
+    "핑", "등록", "롤프로필", "발로프로필", "롤갱신", "발로갱신", "도움",
     "내전생성", "등록해제", "주최자양도",
     "내전목록", "내전종료",
     "프로필", "전적초기화", "가위바위보", "주사위",

@@ -656,7 +656,7 @@ def add_inhouse_participant(
             game_label = "League of Legends" if game == "lol" else "VALORANT"
             return (
                 False,
-                f"이 유저는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/register`로 등록해 주세요.",
+                f"이 유저는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/등록`으로 등록해 주세요.",
             )
 
         existing = connection.execute(
@@ -982,7 +982,7 @@ def replace_inhouse_participant(
             game_label = "League of Legends" if game == "lol" else "VALORANT"
             return (
                 False,
-                f"새 참가자는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/register`로 등록해 주세요.",
+                f"새 참가자는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/등록`으로 등록해 주세요.",
             )
 
         connection.execute(

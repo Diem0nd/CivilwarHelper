@@ -73,6 +73,7 @@ def test_summarize_matches_uses_latest_competitive_tier():
 
 
 async def test_fetch_adds_latest_competitive_match_when_recent_ones_are_unrated(monkeypatch):
+    monkeypatch.setenv(valorant.VAL_API_KEY_ENV, "RGAPI-test-key")
     history = [{"matchId": f"u{i}", "queueId": "unrated", "gameStartTimeMillis": 100 - i} for i in range(12)]
     history.append({"matchId": "c1", "queueId": "competitive", "gameStartTimeMillis": 1})
     fetched = []

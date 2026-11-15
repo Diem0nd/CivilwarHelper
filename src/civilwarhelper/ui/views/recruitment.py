@@ -318,16 +318,6 @@ class InhouseRecruitmentView(discord.ui.View):
         cancel_btn.callback = self.cancel_recruitment_callback
         self.add_item(cancel_btn)
 
-        fill_btn = discord.ui.Button(
-            label="🧪 10명 자동 채우기",
-            style=discord.ButtonStyle.secondary,
-            disabled=is_full,
-            row=0,
-            custom_id=f"inhouse:{sid}:autofill",
-        )
-        fill_btn.callback = self.auto_fill_callback
-        self.add_item(fill_btn)
-
         self.add_item(SelfPositionCombinedSelect(self.game, custom_id=f"inhouse:{sid}:position"))
 
         unjoined = (
@@ -532,26 +522,6 @@ class InhouseRecruitmentView(discord.ui.View):
             view=InhouseTeamManageView(self.guild_id, session, updated_participants, balance_settings),
             allowed_mentions=discord.AllowedMentions(users=True),
         )
-
-    async def auto_fill_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        session = database.get_inhouse_session_by_id(self.guild_id, self.session_id)
-        if session is None:
-            await interaction.followup.send("이미 종료된 내전입니다.", ephemeral=True)
-            return
-
-        if interaction.user.id != session["organizer_user_id"]:
-            await interaction.followup.send("10명 자동 채우기는 **주최자**만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        success, msg = database.auto_fill_inhouse_to_ten(self.guild_id, self.session_id)
-        if not success:
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        await self.refresh_lobby_message(interaction)
-        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
 
 
 # 순환참조 방지용 하단 import
