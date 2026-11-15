@@ -1,9 +1,11 @@
+import os
+from pathlib import Path
 import sqlite3
 
 from civilwarhelper.config.settings import PROJECT_ROOT
 
 BASE_DIR = PROJECT_ROOT
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 DATABASE_PATH = DATA_DIR / "civilwarhelper.db"
 
 
