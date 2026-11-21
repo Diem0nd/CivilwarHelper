@@ -3,9 +3,11 @@ import logging
 import discord
 
 from civilwarhelper import db as database
+from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, VAL_STANDARD_POSITIONS
+from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.views.recruitment import InhouseRecruitmentView
-
+from civilwarhelper.ui.views.team_manage import InhouseTeamManageView
 
 def resolve_organizer_target_session(
     guild_id: int,
@@ -89,11 +91,9 @@ async def sync_lobby_message_if_exists(
     if guild is None:
         return
 
-    session = (
-        database.get_inhouse_session_by_id(guild.id, session_or_id)
-        if isinstance(session_or_id, int)
-        else session_or_id
-    )
+    # dict가 넘어왔더라도 항상 DB에서 최신 상태(양도된 주최자 ID, match_started 여부 등)를 다시 조회합니다.
+    target_session_id = session_or_id if isinstance(session_or_id, int) else int(session_or_id["session_id"])
+    session = database.get_inhouse_session_by_id(guild.id, target_session_id)
     if not session:
         return
 
@@ -107,12 +107,23 @@ async def sync_lobby_message_if_exists(
 
     try:
         is_closed = session.get("status") not in (None, "open", "recruiting")
-        updated_text = format_inhouse_session_detail(session, participants, is_closed=is_closed)
-        new_view = (
-            None
-            if is_closed
-            else InhouseRecruitmentView(guild_id=guild.id, session=session, participant_count=len(participants))
-        )
+        is_started = bool(session.get("match_started"))
+
+        if not is_closed and is_started:
+            # 내전 진행 중인 경우: 대진표 화면과 팀 관리 View를 유지한 채로 주최자 정보만 갱신
+            positions = LOL_STANDARD_POSITIONS if session.get("game") == "lol" else VAL_STANDARD_POSITIONS
+            balance_settings = database.get_session_balance_settings(guild.id, session_id, positions)
+            updated_text = format_matchmaking_board(session, participants, balance_settings)
+            new_view = InhouseTeamManageView(guild.id, session, participants, balance_settings)
+        else:
+            # 모집 중이거나 종료된 경우: 기존 모집창 포맷 사용
+            updated_text = format_inhouse_session_detail(session, participants, is_closed=is_closed)
+            new_view = (
+                None
+                if is_closed
+                else InhouseRecruitmentView(guild_id=guild.id, session=session, participant_count=len(participants))
+            )
+
         await msg.edit(
             content=updated_text,
             view=new_view,

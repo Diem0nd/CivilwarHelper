@@ -10,18 +10,31 @@ from civilwarhelper.ui.emojis import get_custom_emoji
 
 
 class OrganizerAddRegisteredSelect(discord.ui.Select):
-    def __init__(self, unjoined_profiles: list[dict], remaining_slots: int, custom_id: str | None = None):
+    def __init__(
+        self,
+        unjoined_profiles: list[dict],
+        remaining_slots: int,
+        custom_id: str | None = None,
+        game: str = "lol",
+    ):
         options: list[discord.SelectOption] = []
         for prof in unjoined_profiles[:25]:
             uid = prof["discord_user_id"]
-            name = prof.get("discord_nickname") or prof.get("riot_game_name") or str(uid)
-            riot_label = f"{prof.get('riot_game_name', '')}#{prof.get('riot_tagline', '')}"
-            pos = _format_short_position(prof.get("main_position"), "lol")
-            tier = prof.get("custom_tier") or prof.get("solo_tier") or prof.get("competitive_tier") or "UNRANKED"
+            nick = prof.get("discord_nickname") or str(uid)
+            riot_id = f"{prof.get('riot_game_name', 'Unknown')}#{prof.get('riot_tagline', '0000')}"
+
+            if game == "lol":
+                tier = prof.get("solo_tier") or prof.get("flex_tier") or "UNRANKED"
+                pos = prof.get("main_position") or "미정"
+                desc_text = f"{riot_id} | {tier} | {pos}"[:100]
+            else:
+                tier = prof.get("competitive_tier") or "UNRANKED"
+                desc_text = f"{riot_id} | {tier}"[:100]
+
             options.append(
                 discord.SelectOption(
-                    label=f"{name} ({riot_label})"[:100],
-                    description=f"티어: {tier} | 주포지션: {pos}"[:100],
+                    label=f"➕ {nick}"[:100],
+                    description=desc_text,
                     value=str(uid),
                 )
             )
@@ -71,7 +84,6 @@ class OrganizerAddRegisteredSelect(discord.ui.Select):
 
         await view.refresh_lobby_message(interaction)
         await interaction.followup.send(f"✅ 선택한 서버원 {added_count}명을 내전 명단에 추가했습니다.", ephemeral=True)
-
 
 class RecruitmentKickParticipantSelect(discord.ui.Select):
     def __init__(self, participants: list[dict], custom_id: str | None = None):
@@ -264,6 +276,58 @@ class SelfPositionCombinedSelect(discord.ui.Select):
 
         await view.refresh_lobby_message(interaction)
 
+class NewbieJoinConfirmView(discord.ui.View):
+    """프로필 미등록 유저가 내전 참가를 눌렀을 때 안내문과 함께 표시되는 뉴비 참가 확인 View"""
+
+    def __init__(self, recruitment_view: "InhouseRecruitmentView", lobby_message: discord.Message | None):
+        super().__init__(timeout=180)
+        self.recruitment_view = recruitment_view
+        self.lobby_message = lobby_message
+
+    @discord.ui.button(label="🌱 뉴비(임시)로 참가하기", style=discord.ButtonStyle.success)
+    async def confirm_newbie_join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        display_name = interaction.user.display_name if isinstance(interaction.user, discord.Member) else interaction.user.name
+        success, message = database.add_inhouse_participant(
+            guild_id=self.recruitment_view.guild_id,
+            session_id=self.recruitment_view.session_id,
+            discord_user_id=interaction.user.id,
+            allow_newbie=True,
+            discord_nickname=display_name,
+        )
+        if not success:
+            await interaction.response.edit_message(content=f"❌ {message}", view=None)
+            self.stop()
+            return
+
+        await interaction.response.edit_message(
+            content="🌱 **뉴비(임시 역할)**로 내전에 참가되었습니다! (티어: `UNRANKED` / 포지션: `미정`)",
+            view=None,
+        )
+        self.stop()
+
+        # 원본 모집창 메시지 새로고침
+        session = database.get_inhouse_session_by_id(self.recruitment_view.guild_id, self.recruitment_view.session_id)
+        if session and self.lobby_message is not None:
+            self.recruitment_view.session = session
+            participants = database.get_inhouse_participants_with_profiles(
+                self.recruitment_view.guild_id, self.recruitment_view.session_id
+            )
+            self.recruitment_view.participant_count = len(participants)
+            self.recruitment_view.rebuild_components()
+            text = format_inhouse_session_detail(session, participants)
+            try:
+                await self.lobby_message.edit(
+                    content=text,
+                    view=self.recruitment_view,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel_newbie_join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="내전 참가를 취소했습니다.", view=None)
+        self.stop()
 
 class InhouseRecruitmentView(discord.ui.View):
     def __init__(self, guild_id: int, session: dict, participant_count: int = 0):
@@ -317,8 +381,9 @@ class InhouseRecruitmentView(discord.ui.View):
         )
         cancel_btn.callback = self.cancel_recruitment_callback
         self.add_item(cancel_btn)
-
-        self.add_item(SelfPositionCombinedSelect(self.game, custom_id=f"inhouse:{sid}:position"))
+        
+        if self.game == "lol":
+            self.add_item(SelfPositionCombinedSelect(self.game, custom_id=f"inhouse:{sid}:position"))
 
         unjoined = (
             database.get_unjoined_registered_profiles(self.guild_id, sid, self.game)
@@ -330,6 +395,7 @@ class InhouseRecruitmentView(discord.ui.View):
                 unjoined_profiles=unjoined,
                 remaining_slots=max(0, 10 - self.participant_count),
                 custom_id=f"inhouse:{sid}:add",
+                game=self.game,
             )
         )
 
@@ -371,6 +437,20 @@ class InhouseRecruitmentView(discord.ui.View):
         await interaction.response.defer()
         success, message = database.add_inhouse_participant(self.guild_id, self.session_id, interaction.user.id)
         if not success:
+            if message == "NEED_NEWBIE_CONFIRM":
+                game_label = "League of Legends" if self.game == "lol" else "VALORANT"
+                guide_text = (
+                    f"⚠️ **아직 {game_label} 프로필이 등록되지 않은 상태입니다.**\n\n"
+                    "지금 바로 **뉴비(임시 역할)**로 내전에 참여하시겠습니까?\n"
+                    "• **적용 랭크:** `UNRANKED` (언랭)\n"
+                    "• **초기 포지션:** `미정` (참가 후 모집창에서 포지션 변경 가능)\n"
+                    "• **안내사항:** 뉴비 참가는 일시적인 역할이므로 내전을 진행하더라도 **`/프로필`에 내전 전적(승패 기록)이 남지 않습니다.**\n"
+                    "*(정식 프로필과 전적 기록을 원하시면 `/등록` 명령어를 먼저 이용해 주세요!)*"
+                )
+                confirm_view = NewbieJoinConfirmView(recruitment_view=self, lobby_message=interaction.message)
+                await interaction.followup.send(guide_text, view=confirm_view, ephemeral=True)
+                return
+
             await interaction.followup.send(message, ephemeral=True)
             return
         await self.refresh_lobby_message(interaction)

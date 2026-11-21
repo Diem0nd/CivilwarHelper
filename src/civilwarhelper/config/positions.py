@@ -51,7 +51,7 @@ POSITION_SHORT_LABEL = {
 
 # 신캐 나오면 여기 추가 (영문 대문자, 특수문자 제외)
 VAL_AGENT_ROLES = {
-    **dict.fromkeys(["JETT", "PHOENIX", "REYNA", "RAZE", "YORU", "NEON", "ISO", "WAYLAY"], "Duelist"),
+    **dict.fromkeys(["JETT", "PHOENIX", "REYNA", "RAZE", "YORU", "NEON", "ISO", "WAYLAY", "HUSH"], "Duelist"),
     **dict.fromkeys(["SOVA", "BREACH", "SKYE", "KAYO", "FADE", "GEKKO", "TEJO"], "Initiator"),
     **dict.fromkeys(["BRIMSTONE", "VIPER", "OMEN", "ASTRA", "HARBOR", "CLOVE"], "Controller"),
     **dict.fromkeys(["KILLJOY", "CYPHER", "SAGE", "CHAMBER", "DEADLOCK", "VYSE", "VETO"], "Sentinel"),

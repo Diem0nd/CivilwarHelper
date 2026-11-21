@@ -109,3 +109,23 @@ def clear_fearless_records(guild_id: int, session_id: int) -> dict:
     state = get_fearless_state(guild_id, session_id)
     _save_fearless_payload(guild_id, session_id, state["enabled"], {}, state["results"])
     return get_fearless_state(guild_id, session_id)
+
+def undo_last_set_winner(guild_id: int, session_id: int) -> tuple[bool, int | None, str | None]:
+    """가장 최근에 기록된 세트의 승패 결과를 삭제하고 (성공여부, 취소된 세트번호, 취소된 승리팀)을 반환합니다."""
+    state = get_fearless_state(guild_id, session_id)
+    results_data: dict = state.get("results", {})
+    valid_sets = [int(k) for k in results_data.keys() if str(k).isdigit()]
+    if not valid_sets:
+        return False, None, None
+
+    last_set = max(valid_sets)
+    removed_winner = results_data.pop(str(last_set), None)
+
+    _save_fearless_payload(
+        guild_id=guild_id,
+        session_id=session_id,
+        enabled=state["enabled"],
+        sets_data=state["sets"],
+        results_data=results_data,
+    )
+    return True, last_set, removed_winner

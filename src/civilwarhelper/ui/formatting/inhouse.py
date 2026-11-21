@@ -2,6 +2,7 @@ from civilwarhelper import db as database
 from civilwarhelper.ui.formatting.profile import _format_short_position, _format_tier_with_custom_emoji
 from civilwarhelper.ui.emojis import get_custom_emoji
 
+
 def format_inhouse_session_detail(
     session: dict,
     participants: list[dict],
@@ -41,14 +42,8 @@ def format_inhouse_session_detail(
             user_mention = f"<@{p['discord_user_id']}>"
             riot_name = p.get("riot_game_name") or "Unknown"
             riot_tag = p.get("riot_tagline") or "Unknown"
-
-            main_pos = _format_short_position(p.get("preferred_position") or p.get("main_position"), game)
-            sub_raw = (p.get("sub_position") or "").strip()
-            pos_display = (
-                f"{main_pos}/{_format_short_position(sub_raw, game)}"
-                if sub_raw and sub_raw != "선택안함"
-                else main_pos
-            )
+            is_newbie = (riot_tag == "NEWBIE")
+            id_badge = "**[🌱 뉴비]**" if is_newbie else f"`{riot_name}#{riot_tag}`"
 
             custom_raw = (p.get("custom_tier") or "").strip()
             custom_prefix = (
@@ -58,17 +53,31 @@ def format_inhouse_session_detail(
             )
 
             if game == "lol":
+                raw_main = p.get("preferred_position") or p.get("main_position")
+                if not raw_main or str(raw_main).strip() in ("미정", "Fill"):
+                    main_pos = "미정"
+                else:
+                    main_pos = _format_short_position(raw_main, game)
+
+                sub_raw = (p.get("sub_position") or "").strip()
+                pos_display = (
+                    f"{main_pos}/{_format_short_position(sub_raw, game)}"
+                    if sub_raw and sub_raw not in ("선택안함", "미정")
+                    else main_pos
+                )
+
                 solo_tier = _format_tier_with_custom_emoji(p.get("solo_tier"), "lol")
                 flex_tier = _format_tier_with_custom_emoji(p.get("flex_tier"), "lol")
                 lines.append(
-                    f"{idx}. {user_mention} `{riot_name}#{riot_tag}` "
+                    f"{idx}. {user_mention} {id_badge} "
                     f"({custom_prefix}솔로:{solo_tier} / 자유:{flex_tier} | **{pos_display}**)"
                 )
             else:
+                # 발로란트 내전: 역할 분담 없이 티어만 깔끔하게 표시
                 comp_tier = _format_tier_with_custom_emoji(p.get("competitive_tier"), "valorant")
                 lines.append(
-                    f"{idx}. {user_mention} `{riot_name}#{riot_tag}` "
-                    f"({custom_prefix}티어:{comp_tier} | **{pos_display}**)"
+                    f"{idx}. {user_mention} {id_badge} "
+                    f"({custom_prefix}티어:{comp_tier})"
                 )
     elif not is_closed:
         lines.append(f"\n{get_custom_emoji('AThinking', 'ℹ️')} 아직 참가자가 없습니다. 아래 [🎮 내전 참가] 버튼을 눌러 참여하세요!*")

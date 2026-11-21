@@ -1,3 +1,5 @@
+from itertools import combinations
+
 from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, VAL_STANDARD_POSITIONS
 from civilwarhelper.config.tiers import DIVISION_BONUS, TIER_BASE_SCORE
 from civilwarhelper.ui.emojis import get_tier_emoji
@@ -14,7 +16,7 @@ def assign_teams_with_balance(
     balance_settings: dict[str, str],
     team_groups: list[list[int]] | None = None,
 ) -> list[dict]:
-    positions = LOL_STANDARD_POSITIONS if game == "lol" else VAL_STANDARD_POSITIONS
+    positions = LOL_STANDARD_POSITIONS if game == "lol" else ["1", "2", "3", "4", "5"]
 
     # 10명 안 될 때 예외처리
     if len(participants) != 10:
@@ -23,14 +25,26 @@ def assign_teams_with_balance(
             key=lambda p: get_participant_highest_tier_info(p, game)[0],
             reverse=True,
         )
-        return [
-            {
-                "discord_user_id": p["discord_user_id"],
-                "assigned_team": "RED" if idx % 2 == 0 else "BLUE",
-                "assigned_position": positions[idx % len(positions)],
-            }
-            for idx, p in enumerate(scored)
-        ]
+        red_list = [p for idx, p in enumerate(scored) if idx % 2 == 0]
+        blue_list = [p for idx, p in enumerate(scored) if idx % 2 == 1]
+        res = []
+        for idx, p in enumerate(red_list):
+            res.append(
+                {
+                    "discord_user_id": p["discord_user_id"],
+                    "assigned_team": "RED",
+                    "assigned_position": positions[idx % len(positions)],
+                }
+            )
+        for idx, p in enumerate(blue_list):
+            res.append(
+                {
+                    "discord_user_id": p["discord_user_id"],
+                    "assigned_team": "BLUE",
+                    "assigned_position": positions[idx % len(positions)],
+                }
+            )
+        return res
 
     active_groups: list[list[int]] = []
     participant_uids = {int(p["discord_user_id"]) for p in participants}
@@ -46,6 +60,73 @@ def assign_teams_with_balance(
         for g_idx, g in enumerate(active_groups)
         for uid in g
     }
+
+    # 발로란트 내전: 역할 분담 없이 5 vs 5 전체 티어 밸런스 매칭 후 티어 내림차순 [1] ~ [5] 배정
+    if game != "lol":
+        val_players = []
+        for p in participants:
+            uid = int(p["discord_user_id"])
+            score, best_label = get_participant_highest_tier_info(p, game)
+            val_players.append(
+                {
+                    **p,
+                    "_uid": uid,
+                    "_score": score,
+                    "_best_tier_label": best_label,
+                }
+            )
+
+        best_red_indices: tuple[int, ...] = (0, 1, 2, 3, 4)
+        best_val_key: tuple[int, float] = (999, float("inf"))
+
+        for red_idx_tuple in combinations(range(10), 5):
+            red_set = set(red_idx_tuple)
+            red_uids = {val_players[i]["_uid"] for i in red_idx_tuple}
+            blue_uids = {val_players[i]["_uid"] for i in range(10) if i not in red_set}
+
+            group_v = sum(
+                1 for g in active_groups
+                if any(u in red_uids for u in g) and any(u in blue_uids for u in g)
+            )
+            red_sum = sum(val_players[i]["_score"] for i in red_idx_tuple)
+            blue_sum = sum(val_players[i]["_score"] for i in range(10) if i not in red_set)
+            diff = abs(red_sum - blue_sum)
+
+            cand_key = (group_v, diff)
+            if cand_key < best_val_key:
+                best_val_key = cand_key
+                best_red_indices = red_idx_tuple
+
+        red_chosen_set = set(best_red_indices)
+        red_team = sorted(
+            [val_players[i] for i in range(10) if i in red_chosen_set],
+            key=lambda x: x["_score"],
+            reverse=True,
+        )
+        blue_team = sorted(
+            [val_players[i] for i in range(10) if i not in red_chosen_set],
+            key=lambda x: x["_score"],
+            reverse=True,
+        )
+
+        val_res: list[dict] = []
+        for rank_idx in range(5):
+            slot_label = str(rank_idx + 1)
+            val_res.append(
+                {
+                    "discord_user_id": red_team[rank_idx]["discord_user_id"],
+                    "assigned_team": "RED",
+                    "assigned_position": slot_label,
+                }
+            )
+            val_res.append(
+                {
+                    "discord_user_id": blue_team[rank_idx]["discord_user_id"],
+                    "assigned_team": "BLUE",
+                    "assigned_position": slot_label,
+                }
+            )
+        return val_res
 
     aliases = {"ADC": "AD carry", "Bot": "AD carry", "Bottom": "AD carry"} if game == "lol" else {}
     enriched = []
@@ -219,7 +300,8 @@ def _extract_player_tier_and_score(p: dict | None, game: str = "lol") -> tuple[s
         if solo_text != "Unranked" and (solo_score >= flex_score or flex_text == "Unranked"):
             tier_text, calc_score = solo_text, solo_score
         elif flex_text != "Unranked":
-            tier_text, calc_score = flex_text, flex_score
+            tier_text, flex_score = flex_text, flex_score
+            calc_score = flex_score
         else:
             tier_text, calc_score = "Unranked", 10.0
 

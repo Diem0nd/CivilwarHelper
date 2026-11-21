@@ -72,18 +72,6 @@ def format_matchmaking_board(
     is_finished: bool = False,
 ) -> str:
     game = session.get("game", "lol")
-    positions = LOL_STANDARD_POSITIONS if game == "lol" else VAL_STANDARD_POSITIONS
-
-    red_by_pos: dict[str, dict] = {}
-    blue_by_pos: dict[str, dict] = {}
-
-    for p in participants:
-        side = str(p.get("team_side") or p.get("assigned_team") or "").upper()
-        pos = str(p.get("assigned_position") or p.get("primary_position") or "")
-        if side == "RED":
-            red_by_pos[pos] = p
-        elif side == "BLUE":
-            blue_by_pos[pos] = p
 
     guild_id = session.get("guild_id", 0)
     session_id = session["session_id"]
@@ -101,11 +89,43 @@ def format_matchmaking_board(
     total_red = 0.0
     total_blue = 0.0
 
-    for idx, pos in enumerate(positions):
-        short_pos = POSITION_SHORT_LABEL.get(pos, pos.upper())
-        red_p = red_by_pos.get(pos)
-        blue_p = blue_by_pos.get(pos)
+    if game == "lol":
+        positions = LOL_STANDARD_POSITIONS
+        red_by_pos: dict[str, dict] = {}
+        blue_by_pos: dict[str, dict] = {}
 
+        for p in participants:
+            side = str(p.get("team_side") or p.get("assigned_team") or "").upper()
+            pos = str(p.get("assigned_position") or p.get("primary_position") or "")
+            if side == "RED":
+                red_by_pos[pos] = p
+            elif side == "BLUE":
+                blue_by_pos[pos] = p
+
+        matchup_rows = [
+            (POSITION_SHORT_LABEL.get(pos, pos.upper()), red_by_pos.get(pos), blue_by_pos.get(pos))
+            for pos in positions
+        ]
+    else:
+        # 발로란트 내전: 각 팀 인원을 티어 점수 내림차순으로 정렬하여 [1] ~ [5]로 표시
+        red_list = [
+            p for p in participants
+            if str(p.get("team_side") or p.get("assigned_team") or "").upper() == "RED"
+        ]
+        blue_list = [
+            p for p in participants
+            if str(p.get("team_side") or p.get("assigned_team") or "").upper() == "BLUE"
+        ]
+        red_list.sort(key=lambda p: _extract_player_tier_and_score(p, game)[1], reverse=True)
+        blue_list.sort(key=lambda p: _extract_player_tier_and_score(p, game)[1], reverse=True)
+
+        matchup_rows = []
+        for idx in range(5):
+            r_p = red_list[idx] if idx < len(red_list) else None
+            b_p = blue_list[idx] if idx < len(blue_list) else None
+            matchup_rows.append((str(idx + 1), r_p, b_p))
+
+    for idx, (short_pos, red_p, blue_p) in enumerate(matchup_rows):
         red_tier_str, red_score = _extract_player_tier_and_score(red_p, game)
         blue_tier_str, blue_score = _extract_player_tier_and_score(blue_p, game)
 
@@ -119,7 +139,7 @@ def format_matchmaking_board(
         lines.append(f"**[{short_pos}]** {red_tier_str} **{lane_sym}** {blue_tier_str}")
         lines.append(f"{red_mention} vs {blue_mention}")
 
-        if idx < len(positions) - 1:
+        if idx < len(matchup_rows) - 1:
             lines.append("")
 
     team_sym = _get_comparison_symbol(total_red, total_blue, strong_threshold=4.0)

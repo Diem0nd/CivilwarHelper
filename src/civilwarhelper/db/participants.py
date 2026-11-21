@@ -9,6 +9,8 @@ def add_inhouse_participant(
     guild_id: int,
     session_id: int,
     discord_user_id: int,
+    allow_newbie: bool = False,
+    discord_nickname: str | None = None,
 ) -> tuple[bool, str]:
     with closing(get_connection()) as conn:
         try:
@@ -21,19 +23,6 @@ def add_inhouse_participant(
 
             if session is None:
                 return False, "해당 내전을 찾을 수 없거나 이미 종료되었습니다."
-
-            game = session["game"]
-            profile = conn.execute(
-                "SELECT * FROM profiles WHERE guild_id = ? AND discord_user_id = ? AND game = ?",
-                (guild_id, discord_user_id, game),
-            ).fetchone()
-
-            if profile is None:
-                game_label = "League of Legends" if game == "lol" else "VALORANT"
-                return (
-                    False,
-                    f"이 유저는 아직 {game_label} 프로필이 등록되지 않았습니다. 먼저 `/register`로 등록해 주세요.",
-                )
 
             existing = conn.execute(
                 "SELECT 1 FROM inhouse_participants WHERE session_id = ? AND discord_user_id = ?",
@@ -49,36 +38,72 @@ def add_inhouse_participant(
             if cnt >= 10:
                 return False, "이미 참가자가 10명 모두 모집되었습니다."
 
-            now = datetime.now(timezone.utc).isoformat()
-            keys = profile.keys()
-            sub_pos = profile["sub_position"] if "sub_position" in keys else None
-            custom_tier = profile["custom_tier"] if "custom_tier" in keys else None
+            game = session["game"]
+            profile = conn.execute(
+                "SELECT * FROM profiles WHERE guild_id = ? AND discord_user_id = ? AND game = ?",
+                (guild_id, discord_user_id, game),
+            ).fetchone()
 
-            conn.execute(
-                """
-                INSERT INTO inhouse_participants (
-                    session_id, guild_id, discord_user_id,
-                    discord_nickname, riot_game_name, riot_tagline, server_location,
-                    solo_tier, flex_tier, competitive_tier, custom_tier,
-                    main_position, preferred_position, sub_position, joined_at
+            if profile is None and not allow_newbie:
+                return False, "NEED_NEWBIE_CONFIRM"
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            if profile is not None:
+                keys = profile.keys()
+                sub_pos = profile["sub_position"] if "sub_position" in keys else None
+                custom_tier = profile["custom_tier"] if "custom_tier" in keys else None
+
+                conn.execute(
+                    """
+                    INSERT INTO inhouse_participants (
+                        session_id, guild_id, discord_user_id,
+                        discord_nickname, riot_game_name, riot_tagline, server_location,
+                        solo_tier, flex_tier, competitive_tier, custom_tier,
+                        main_position, preferred_position, sub_position, joined_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id, guild_id, discord_user_id,
+                        profile["discord_nickname"], profile["riot_game_name"],
+                        profile["riot_tagline"], profile["server_location"],
+                        profile["solo_tier"], profile["flex_tier"],
+                        profile["competitive_tier"], custom_tier,
+                        profile["main_position"], profile["main_position"],
+                        sub_pos, now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id, guild_id, discord_user_id,
-                    profile["discord_nickname"], profile["riot_game_name"],
-                    profile["riot_tagline"], profile["server_location"],
-                    profile["solo_tier"], profile["flex_tier"],
-                    profile["competitive_tier"], custom_tier,
-                    profile["main_position"], profile["main_position"],
-                    sub_pos, now,
-                ),
-            )
+            else:
+                # 뉴비(미등록 임시 참가자): 랭크는 UNRANKED, 포지션은 미정
+                fallback_name = discord_nickname or f"뉴비_{str(discord_user_id)[-4:]}"
+                conn.execute(
+                    """
+                    INSERT INTO inhouse_participants (
+                        session_id, guild_id, discord_user_id,
+                        discord_nickname, riot_game_name, riot_tagline, server_location,
+                        solo_tier, flex_tier, competitive_tier, custom_tier,
+                        main_position, preferred_position, sub_position, joined_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id, guild_id, discord_user_id,
+                        fallback_name, "뉴비",
+                        "NEWBIE", "Korea",
+                        "UNRANKED", "UNRANKED",
+                        "UNRANKED", None,
+                        "미정", "미정",
+                        None, now,
+                    ),
+                )
+
             conn.commit()
             return True, "참가자가 추가되었습니다."
         except Exception:
             conn.rollback()
             raise
+
 
 
 def remove_inhouse_participant(

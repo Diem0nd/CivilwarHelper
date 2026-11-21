@@ -10,6 +10,7 @@ def _record_participants_match_stats(
     session: dict,
     participants: list[dict],
     winner_side: str,
+    undo: bool = False,
 ) -> None:
     game = str(session.get("game") or "lol").lower()
     win_side = str(winner_side).upper()
@@ -33,6 +34,7 @@ def _record_participants_match_stats(
             "side": side,
             "pos_key": pos_key,
             "score": score,
+            "is_newbie": (str(p.get("riot_tagline") or "") == "NEWBIE"),
         }
 
         if side == "RED":
@@ -49,7 +51,7 @@ def _record_participants_match_stats(
     records: list[dict] = []
     for p_info in red_players + blue_players:
         uid = p_info["uid"]
-        if uid is None:
+        if uid is None or p_info.get("is_newbie"):
             continue
 
         is_red = p_info["side"] == "RED"
@@ -79,4 +81,4 @@ def _record_participants_match_stats(
         )
 
     if records:
-        database.record_global_user_inhouse_result(game=game, player_records=records)
+        database.record_global_user_inhouse_result(game=game, player_records=records, undo=undo)

@@ -6,6 +6,7 @@ from civilwarhelper.db.fearless import (
     record_set_winner,
     save_fearless_set_record,
     toggle_fearless_mode,
+    undo_last_set_winner,
 )
 from civilwarhelper.db.participants import (
     add_inhouse_participant,
@@ -101,4 +102,6 @@ __all__ = [
     "get_global_user_inhouse_stats",
     "record_global_user_inhouse_result",
     "reset_global_user_inhouse_stats",
+    "record_set_winner",
+    "undo_last_set_winner",
 ]

@@ -28,7 +28,7 @@ async def sync_valorant_profile(
         if e.status_code is None:
             return (
                 f"{get_custom_emoji('ALose', '⚠️')} 발로란트 API 키가 아직 설정되지 않아 티어를 불러오지 못했습니다. "
-                f"`/userprofile`에서 체감 티어와 포지션을 설정하면 내전 밸런스에 반영됩니다."
+                f"`/프로필`에서 체감 티어와 포지션을 설정하면 내전 밸런스에 반영됩니다."
             )
         return f"\n{get_custom_emoji('ALose', '⚠️')} Riot API 조회 중 오류가 발생했습니다: {e}"
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:

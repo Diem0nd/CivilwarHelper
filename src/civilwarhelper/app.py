@@ -118,7 +118,7 @@ async def auto_close_expired_inhouse_sessions() -> None:
         except Exception:
             logging.exception("18시간 경과 내전 자동 종료 작업 중 오류 발생")
 
-        # 5분(300초)마다 반복 확인
+        # 1시간(3600초)마다 반복 확인
         await asyncio.sleep(3600)
 
 async def on_ready():

@@ -4,6 +4,7 @@ from civilwarhelper import db as database
 from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, POSITION_SHORT_LABEL, VAL_STANDARD_POSITIONS
 from civilwarhelper.services.balance import assign_teams_with_balance
 from civilwarhelper.services.match_stats import _record_participants_match_stats
+from civilwarhelper.services.team_names import SESSION_CUSTOM_TEAM_NAMES
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.formatting.profile import _format_short_position
@@ -76,31 +77,49 @@ class SetBalanceModeButton(discord.ui.Button):
 
 
 class FreeParticipantSwapSelect(discord.ui.Select):
-    def __init__(self, participants: list[dict]):
+    def __init__(self, participants: list[dict], game: str = "lol"):
         team_order = {"RED": 0, "BLUE": 1}
         pos_order = {
             "Top": 0, "Jungle": 1, "Mid": 2, "Bot": 3, "Bottom": 3, "ADC": 3, "AD carry": 3, "Support": 4,
             "Duelist": 0, "Initiator": 1, "Controller": 2, "Sentinel": 3, "Flex": 4,
+            "1": 0, "2": 1, "3": 2, "4": 3, "5": 4,
         }
 
-        def sort_key(p: dict) -> tuple[int, int, str]:
+        from civilwarhelper.services.balance import _extract_player_tier_and_score
+
+        def sort_key(p: dict) -> tuple[int, float, str]:
             team = str(p.get("team_side") or p.get("assigned_team") or "").upper()
-            pos = str(p.get("assigned_position") or p.get("primary_position") or "")
             name = str(p.get("discord_nickname") or p.get("riot_game_name") or "")
-            return team_order.get(team, 99), pos_order.get(pos, 99), name
+            if game != "lol":
+                _, score = _extract_player_tier_and_score(p, game)
+                return team_order.get(team, 99), -score, name
+            pos = str(p.get("assigned_position") or p.get("primary_position") or "")
+            return team_order.get(team, 99), float(pos_order.get(pos, 99)), name
 
         options: list[discord.SelectOption] = []
+        team_rank_counter: dict[str, int] = {"RED": 0, "BLUE": 0}
+
         for p in sorted(participants, key=sort_key)[:25]:
-            uid = p["discord_user_id"]
+            uid = p.get("discord_user_id", p.get("user_id"))
             team_side = str(p.get("team_side") or p.get("assigned_team") or "미배정").upper()
             team_icon = "🟥 RED" if team_side == "RED" else ("🟦 BLUE" if team_side == "BLUE" else "⬜ 미배정")
-            pos = p.get("assigned_position") or p.get("primary_position") or "미정"
+
+            if game != "lol" and team_side in team_rank_counter:
+                team_rank_counter[team_side] += 1
+                pos_label = str(team_rank_counter[team_side])
+            else:
+                pos_label = p.get("assigned_position") or p.get("primary_position") or "미정"
+
             name = p.get("discord_nickname") or p.get("riot_game_name") or str(uid)
-            riot_tag = f"{p.get('riot_game_name', '')}#{p.get('riot_tagline', '')}"
+            riot_tag = (
+                "🌱 뉴비 (미등록)"
+                if p.get("riot_tagline") == "NEWBIE"
+                else f"{p.get('riot_game_name', '')}#{p.get('riot_tagline', '')}"
+            )
 
             options.append(
                 discord.SelectOption(
-                    label=f"{team_icon} | [{pos}] {name}"[:100],
+                    label=f"{team_icon} | [{pos_label}] {name}"[:100],
                     description=f"Riot: {riot_tag}"[:100],
                     value=str(uid),
                 )
@@ -196,6 +215,101 @@ class RecordMatchResultButton(discord.ui.Button):
             allowed_mentions=discord.AllowedMentions(users=True),
         )
 
+class UndoLastSetResultButton(discord.ui.Button):
+    def __init__(self, last_set_num: int):
+        super().__init__(
+            label=f"⏪ {last_set_num}세트 결과 취소",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: InhouseTeamManageView = self.view  # type: ignore
+        if interaction.user.id != view.organizer_user_id:
+            await interaction.response.send_message("이 내전의 주최자만 조작할 수 있습니다.", ephemeral=True)
+            return
+
+        ok, undone_set, removed_winner = database.undo_last_set_winner(view.guild_id, view.session_id)
+        if not ok or removed_winner is None:
+            await interaction.response.send_message("취소할 이전 세트 승패 기록이 없습니다.", ephemeral=True)
+            return
+
+        _record_participants_match_stats(view.session, view.participants, removed_winner, undo=True)
+
+        view.refresh_items()
+        await interaction.response.edit_message(
+            content=format_matchmaking_board(view.session, view.participants, view.balance_settings),
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+
+class UndoFinishInhouseView(discord.ui.View):
+    """내전 종료 후 10분(600초) 동안 종료 취소(진행 화면 복구)를 지원하는 임시 View"""
+
+    def __init__(self, manage_view: "InhouseTeamManageView", message: discord.Message | None = None):
+        super().__init__(timeout=600)
+        self.manage_view = manage_view
+        self.message = message
+
+    @discord.ui.button(
+        label="↩️ 내전 종료 취소 (진행 화면으로 복구 - 10분 내 가능)",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def undo_finish_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = database.get_inhouse_session_by_id(self.manage_view.guild_id, self.manage_view.session_id)
+        organizer_id = session["organizer_user_id"] if session else self.manage_view.organizer_user_id
+
+        is_organizer = interaction.user.id == organizer_id
+        is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+        if not (is_organizer or is_admin):
+            await interaction.response.send_message(
+                "내전 종료 취소는 주최자(또는 서버 관리자)만 할 수 있습니다.",
+                ephemeral=True,
+            )
+            return
+
+        if session is None:
+            await interaction.response.send_message(
+                "이미 완전히 종료되어 복구할 수 없는 내전입니다.",
+                ephemeral=True,
+            )
+            await interaction.message.edit(view=None)
+            self.stop()
+            return
+
+        # 취소(복구) 시 타이머를 멈추고 최신 DB 상태 기준으로 진행 화면을 다시 표시합니다.
+        self.stop()
+        self.manage_view.session = session
+        self.manage_view.organizer_user_id = session["organizer_user_id"]
+        self.manage_view.participants = database.get_inhouse_participants_with_profiles(
+            self.manage_view.guild_id, self.manage_view.session_id
+        )
+        self.manage_view.balance_settings = database.get_session_balance_settings(
+            self.manage_view.guild_id, self.manage_view.session_id, self.manage_view.positions
+        )
+        self.manage_view.refresh_items()
+
+        await interaction.response.edit_message(
+            content=format_matchmaking_board(
+                self.manage_view.session,
+                self.manage_view.participants,
+                self.manage_view.balance_settings,
+            ),
+            view=self.manage_view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+
+    async def on_timeout(self):
+        # 10분이 경과하면 DB에서 세션을 최종 삭제하고 메시지에서 버튼을 제거합니다.
+        database.delete_inhouse_session(self.manage_view.guild_id, self.manage_view.session_id)
+        SESSION_CUSTOM_TEAM_NAMES.pop((self.manage_view.guild_id, self.manage_view.session_id), None)
+        if self.message is not None:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
 
 class FinishInhouseMatchButton(discord.ui.Button):
     def __init__(self):
@@ -224,12 +338,17 @@ class FinishInhouseMatchButton(discord.ui.Button):
         )
         final_board = f"🏁 **[내전 종료]**\n{final_board}"
 
-        database.delete_inhouse_session(view.guild_id, view.session_id)
+        undo_view = UndoFinishInhouseView(manage_view=view, message=interaction.message)
         await interaction.response.edit_message(
             content=final_board,
-            view=None,
+            view=undo_view,
             allowed_mentions=discord.AllowedMentions(users=True),
         )
+        if undo_view.message is None:
+            try:
+                undo_view.message = await interaction.original_response()
+            except discord.HTTPException:
+                pass
 
 
 class ReturnToRecruitmentButton(discord.ui.Button):
@@ -277,6 +396,20 @@ class SwapWholeTeamSideButton(discord.ui.Button):
             return
 
         database.swap_entire_red_blue_teams(view.guild_id, view.session_id)
+
+        # 설정된 커스텀 팀 이름이 있다면 레드 ↔ 블루 팀 이름도 함께 맞바꿉니다.
+        team_name_key = (view.guild_id, view.session_id)
+        if team_name_key in SESSION_CUSTOM_TEAM_NAMES:
+            cur_names = SESSION_CUSTOM_TEAM_NAMES[team_name_key]
+            old_red = cur_names.get("RED", "")
+            old_blue = cur_names.get("BLUE", "")
+            new_red = "RED 팀" if old_blue == "BLUE 팀" else old_blue
+            new_blue = "BLUE 팀" if old_red == "RED 팀" else old_red
+            SESSION_CUSTOM_TEAM_NAMES[team_name_key] = {
+                "RED": new_red,
+                "BLUE": new_blue,
+            }
+
         view.balance_settings = database.get_session_balance_settings(view.guild_id, view.session_id, view.positions)
         view.participants = database.get_inhouse_participants_with_profiles(view.guild_id, view.session_id)
         view.refresh_items()
@@ -325,14 +458,18 @@ class InhouseTeamManageView(discord.ui.View):
         _add(ReturnToRecruitmentButton(), 0)
         _add(FinishInhouseMatchButton(), 0)
 
-        # row 1: 세트 승패 기록 / 진영 전체 스왑
+        # row 1: 세트 승패 기록 / 직전 세트 취소 / 진영 전체 스왑
         _add(RecordMatchResultButton(True, current_set, disabled=need_fearless_first), 1)
         _add(RecordMatchResultButton(False, current_set, disabled=need_fearless_first), 1)
+        done_sets = [int(k) for k in state.get("results", {}) if str(k).isdigit()]
+        if done_sets:
+            _add(UndoLastSetResultButton(max(done_sets)), 1)
         _add(SwapWholeTeamSideButton(), 1)
 
         # row 2: 라인별 1:1 스왑
-        for pos in self.positions:
-            _add(QuickLaneSwapButton(pos), 2)
+        if game == "lol":
+            for pos in self.positions:
+                _add(QuickLaneSwapButton(pos), 2)
 
         # row 3: 2명 자유 스왑
         if len(self.participants) >= 2:

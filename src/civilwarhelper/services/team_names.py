@@ -48,11 +48,11 @@ def recommend_team_names_by_balance(
         if {"DUEL", "INIT"}.issubset(high_set):
             return "진입 맛집"
         if {"CTRL", "SENT"}.issubset(high_set):
-            return "철벽 수비대"
+            return "넌 못지나간다"
         if {"DUEL", "INIT"}.issubset(low_set):
-            return "들어가 말아"
+            return "갈래 말래"
         if {"CTRL", "SENT"}.issubset(low_set):
-            return "연막은 어디에"
+            return "이랏샤이마세"
         if len(high_set) == 1:
             return {
                 "DUEL": "원맨쇼",
