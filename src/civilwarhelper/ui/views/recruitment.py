@@ -6,7 +6,7 @@ from civilwarhelper.services.balance import assign_teams_with_balance
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.formatting.profile import _format_short_position
-from civilwarhelper.ui.emojis import get_custom_emoji
+from civilwarhelper.ui.emojis import get_custom_emoji, get_position_button_emoji
 
 
 class OrganizerAddRegisteredSelect(discord.ui.Select):
@@ -233,8 +233,22 @@ class SelfPositionCombinedSelect(discord.ui.Select):
     def __init__(self, game: str, custom_id: str | None = None):
         pos_list = LOL_COMBINED_POSITION_LABELS if game == "lol" else VAL_COMBINED_POSITION_LABELS
 
-        options = [discord.SelectOption(label=f"주 포지션: {lbl}", value=f"MAIN:{val}") for val, lbl in pos_list]
-        options += [discord.SelectOption(label=f"부 포지션: {lbl}", value=f"SUB:{val}") for val, lbl in pos_list]
+        options = [
+            discord.SelectOption(
+                label=f"주 포지션: {lbl}",
+                value=f"MAIN:{val}",
+                emoji=get_position_button_emoji(game, val),
+            )
+            for val, lbl in pos_list
+        ]
+        options += [
+            discord.SelectOption(
+                label=f"부 포지션: {lbl}",
+                value=f"SUB:{val}",
+                emoji=get_position_button_emoji(game, val),
+            )
+            for val, lbl in pos_list
+        ]
         options.append(discord.SelectOption(label="부 포지션: 선택안함 (초기화)", value="SUB:NONE"))
 
         super().__init__(
@@ -472,13 +486,13 @@ class InhouseRecruitmentView(discord.ui.View):
             return
 
         is_organizer = interaction.user.id == session["organizer_user_id"]
-        is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
-        if not (is_organizer or is_admin):
+        if not is_organizer:
             await interaction.followup.send(
-                f"{get_custom_emoji('ALose', '❌')} 내전 모집 취소는 **주최자**(또는 서버 관리자)만 할 수 있습니다.",
+                f"{get_custom_emoji('ALose', '❌')} 내전 모집 취소는 **주최자**만 할 수 있습니다.",
                 ephemeral=True,
             )
             return
+
 
         participants = database.get_inhouse_participants_with_profiles(self.guild_id, self.session_id)
         database.delete_inhouse_session(self.guild_id, self.session_id)

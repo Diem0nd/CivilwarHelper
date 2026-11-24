@@ -9,7 +9,23 @@ from civilwarhelper.config.tiers import LOL_TIER_NAMES_ORDERED, VAL_TIER_NAMES_O
 from civilwarhelper.riot import client as riot_api
 from civilwarhelper.riot import valorant as riot_valorant
 from civilwarhelper.ui.formatting.profile import format_user_profile_card
-from civilwarhelper.ui.emojis import get_custom_emoji
+from civilwarhelper.ui.emojis import (
+    get_button_emoji,
+    get_custom_emoji,
+    get_position_button_emoji,
+    get_position_emoji,
+    get_tier_emoji,
+)
+
+
+def _get_tier_select_emoji(game: str, tier_name: str):
+    prefix = "lol" if game == "lol" else "val"
+    key = tier_name.strip().upper()
+    for name in (f"{prefix}{key}", f"{prefix}_{key}"):
+        em = get_button_emoji(name)
+        if em is not None:
+            return em
+    return None
 
 
 async def sync_valorant_profile(
@@ -42,10 +58,17 @@ async def sync_valorant_profile(
         competitive_tier=api_data["competitive_tier"],
         main_position=api_data["main_position"],
     )
+    comp_tier = api_data["competitive_tier"]
+    comp_base = comp_tier.split()[0].upper() if comp_tier else "UNRANKED"
+    comp_em = get_tier_emoji("valorant", comp_base)
+    main_pos = api_data["main_position"]
+    pos_em = get_position_emoji("valorant", main_pos)
+    pos_str = f"{pos_em} `{main_pos}`".strip()
+
     return (
         f"\n{get_custom_emoji('ACharting', '📊')} **Riot API 연동 완료** — "
-        f"경쟁전: `{api_data['competitive_tier']}` / "
-        f"주 역할: `{api_data['main_position']}`"
+        f"경쟁전: {comp_em} `{comp_tier}` / "
+        f"주 역할: {pos_str}"
     )
 
 
@@ -116,11 +139,19 @@ class RiotIdRegisterModal(discord.ui.Modal):
                     flex_tier=api_data["flex_tier"],
                     main_position=api_data["main_position"],
                 )
+                solo_tier = api_data["solo_tier"]
+                flex_tier = api_data["flex_tier"]
+                solo_em = get_tier_emoji("lol", solo_tier.split()[0].upper() if solo_tier else "UNRANKED")
+                flex_em = get_tier_emoji("lol", flex_tier.split()[0].upper() if flex_tier else "UNRANKED")
+                main_pos = api_data["main_position"]
+                pos_em = get_position_emoji("lol", main_pos)
+                pos_str = f"{pos_em} `{main_pos}`".strip()
+
                 api_note = (
                     f"\n{get_custom_emoji('ACharting', '📊')} **Riot API 연동 완료** — "
-                    f"Solo: `{api_data['solo_tier']}` / "
-                    f"Flex: `{api_data['flex_tier']}` / "
-                    f"주 포지션: `{api_data['main_position']}`"
+                    f"Solo: {solo_em} `{solo_tier}` / "
+                    f"Flex: {flex_em} `{flex_tier}` / "
+                    f"주 포지션: {pos_str}"
                 )
             except (riot_api.RiotAPIError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                 api_note = f"\n{get_custom_emoji('ALose', '⚠️')} Riot API 조회 중 오류가 발생했습니다: {e}"
@@ -167,6 +198,7 @@ class CustomTierBaseSelect(discord.ui.Select):
                     label=f"체감 티어: {t_name}",
                     value=t_name,
                     default=(t_name.upper() == selected_base),
+                    emoji=_get_tier_select_emoji(parent_view.game, t_name),
                 )
             )
 
@@ -215,12 +247,14 @@ class CustomTierDivisionSelect(discord.ui.Select):
         base_name = parent_view.selected_tier_base or "Gold"
         current_custom = (parent_view.profile.get("custom_tier") or "").strip()
         divisions = ["IV", "III", "II", "I"] if parent_view.game == "lol" else ["1", "2", "3"]
+        tier_emoji = _get_tier_select_emoji(parent_view.game, base_name)
 
         options = [
             discord.SelectOption(
                 label=f"세부 단계: {base_name} {div}",
                 value=f"{base_name} {div}",
                 default=(current_custom.upper() == f"{base_name} {div}".upper()),
+                emoji=tier_emoji,
             )
             for div in divisions
         ]
@@ -264,6 +298,7 @@ class ProfileMainPositionSelect(discord.ui.Select):
                 label=f"주 포지션: {pos}",
                 value=pos,
                 default=(pos.lower() == current_main.lower()),
+                emoji=get_position_button_emoji(parent_view.game, pos),
             )
             for pos in positions
         ]
@@ -313,6 +348,7 @@ class ProfileSubPositionSelect(discord.ui.Select):
                 label=f"부 포지션: {pos}",
                 value=pos,
                 default=(pos.lower() == current_sub.lower()),
+                emoji=get_position_button_emoji(parent_view.game, pos),
             )
             for pos in positions
         ]

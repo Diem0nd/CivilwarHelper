@@ -21,6 +21,7 @@ class RPSGameView(discord.ui.View):
         self.blue_user: discord.abc.User | None = None
         self.picks: dict[str, str] = {}
         self.phase: str = "SIDE_SELECT"
+        self._lock = asyncio.Lock()
         self.rebuild_items()
 
     def format_status_message(self) -> str:
@@ -50,26 +51,35 @@ class RPSGameView(discord.ui.View):
         self.clear_items()
 
         if self.phase == "SIDE_SELECT":
-            red_label = f"🟥 RED 참가 ({self.red_user.display_name})" if self.red_user else "🟥 RED 진영 선택"
-            blue_label = f"🟦 BLUE 참가 ({self.blue_user.display_name})" if self.blue_user else "🟦 BLUE 진영 선택"
+            red_name = self.red_user.display_name[:20] if self.red_user else ""
+            blue_name = self.blue_user.display_name[:20] if self.blue_user else ""
+            red_label = f"🟥 RED 참가 ({red_name})" if self.red_user else "🟥 RED 진영 선택"
+            blue_label = f"🟦 BLUE 참가 ({blue_name})" if self.blue_user else "🟦 BLUE 진영 선택"
 
             red_btn = discord.ui.Button(
-                label=red_label,
+                label=red_label[:80],
                 style=discord.ButtonStyle.danger if not self.red_user else discord.ButtonStyle.secondary,
                 row=0,
+                custom_id="rps_select_red",
             )
             red_btn.callback = self.select_red_callback
             self.add_item(red_btn)
 
             blue_btn = discord.ui.Button(
-                label=blue_label,
+                label=blue_label[:80],
                 style=discord.ButtonStyle.primary if not self.blue_user else discord.ButtonStyle.secondary,
                 row=0,
+                custom_id="rps_select_blue",
             )
             blue_btn.callback = self.select_blue_callback
             self.add_item(blue_btn)
 
-            cancel_btn = discord.ui.Button(label="✖️ 취소", style=discord.ButtonStyle.secondary, row=0)
+            cancel_btn = discord.ui.Button(
+                label="✖️ 취소",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+                custom_id="rps_cancel",
+            )
             cancel_btn.callback = self.cancel_callback
             self.add_item(cancel_btn)
 
@@ -79,6 +89,7 @@ class RPSGameView(discord.ui.View):
                     label=f"{info['emoji']} {info['label']}",
                     style=discord.ButtonStyle.primary,
                     row=0,
+                    custom_id=f"rps_pick_{key}",
                 )
                 btn.callback = self._make_pick_callback(key)
                 self.add_item(btn)
@@ -88,67 +99,70 @@ class RPSGameView(discord.ui.View):
                 label="🔄 같은 진영으로 재대결",
                 style=discord.ButtonStyle.success,
                 row=0,
+                custom_id="rps_rematch",
             )
             rematch_btn.callback = self.rematch_callback
             self.add_item(rematch_btn)
 
     async def select_red_callback(self, interaction: discord.Interaction):
-        user = interaction.user
-        if self.red_user and self.red_user.id == user.id:
-            self.red_user = None
-        elif self.blue_user and self.blue_user.id == user.id:
-            await interaction.response.send_message(
-                "이미 🟦 **BLUE 진영**을 선택하셨습니다! 한 사람이 두 진영을 동시에 선택할 수 없습니다.",
-                ephemeral=True,
-            )
-            return
-        elif self.red_user is not None:
-            await interaction.response.send_message(
-                f"이미 <@{self.red_user.id}> 님이 🟥 **RED 진영**을 선택했습니다.",
-                ephemeral=True,
-            )
-            return
-        else:
-            self.red_user = user
+        async with self._lock:
+            user = interaction.user
+            if self.red_user and self.red_user.id == user.id:
+                self.red_user = None
+            elif self.blue_user and self.blue_user.id == user.id:
+                await interaction.response.send_message(
+                    "이미 🟦 **BLUE 진영**을 선택하셨습니다! 한 사람이 두 진영을 동시에 선택할 수 없습니다.",
+                    ephemeral=True,
+                )
+                return
+            elif self.red_user is not None:
+                await interaction.response.send_message(
+                    f"이미 <@{self.red_user.id}> 님이 🟥 **RED 진영**을 선택했습니다.",
+                    ephemeral=True,
+                )
+                return
+            else:
+                self.red_user = user
 
-        if self.red_user and self.blue_user:
-            self.phase = "PICK"
+            if self.red_user and self.blue_user:
+                self.phase = "PICK"
 
-        self.rebuild_items()
-        await interaction.response.edit_message(
-            content=self.format_status_message(),
-            view=self,
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
+            self.rebuild_items()
+            await interaction.response.edit_message(
+                content=self.format_status_message(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
     async def select_blue_callback(self, interaction: discord.Interaction):
-        user = interaction.user
-        if self.blue_user and self.blue_user.id == user.id:
-            self.blue_user = None
-        elif self.red_user and self.red_user.id == user.id:
-            await interaction.response.send_message(
-                "이미 🟥 **RED 진영**을 선택하셨습니다! 한 사람이 두 진영을 동시에 선택할 수 없습니다.",
-                ephemeral=True,
-            )
-            return
-        elif self.blue_user is not None:
-            await interaction.response.send_message(
-                f"이미 <@{self.blue_user.id}> 님이 🟦 **BLUE 진영**을 선택했습니다.",
-                ephemeral=True,
-            )
-            return
-        else:
-            self.blue_user = user
+        async with self._lock:
+            user = interaction.user
+            if self.blue_user and self.blue_user.id == user.id:
+                self.blue_user = None
+            elif self.red_user and self.red_user.id == user.id:
+                await interaction.response.send_message(
+                    "이미 🟥 **RED 진영**을 선택하셨습니다! 한 사람이 두 진영을 동시에 선택할 수 없습니다.",
+                    ephemeral=True,
+                )
+                return
+            elif self.blue_user is not None:
+                await interaction.response.send_message(
+                    f"이미 <@{self.blue_user.id}> 님이 🟦 **BLUE 진영**을 선택했습니다.",
+                    ephemeral=True,
+                )
+                return
+            else:
+                self.blue_user = user
 
-        if self.red_user and self.blue_user:
-            self.phase = "PICK"
+            if self.red_user and self.blue_user:
+                self.phase = "PICK"
 
-        self.rebuild_items()
-        await interaction.response.edit_message(
-            content=self.format_status_message(),
-            view=self,
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
+            self.rebuild_items()
+            await interaction.response.edit_message(
+                content=self.format_status_message(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
     async def cancel_callback(self, interaction: discord.Interaction):
         allowed = {self.host_user.id, getattr(self.red_user, "id", 0), getattr(self.blue_user, "id", 0)}
@@ -160,41 +174,42 @@ class RPSGameView(discord.ui.View):
 
     def _make_pick_callback(self, choice_key: str):
         async def _callback(interaction: discord.Interaction):
-            if self.phase != "PICK":
+            async with self._lock:
+                if self.phase != "PICK":
+                    await interaction.response.defer()
+                    return
+
+                uid = interaction.user.id
+                if self.red_user and uid == self.red_user.id:
+                    side = "RED"
+                elif self.blue_user and uid == self.blue_user.id:
+                    side = "BLUE"
+                else:
+                    await interaction.response.send_message(
+                        "참가 중인 두 선수(RED / BLUE)만 패를 선택할 수 있습니다!",
+                        ephemeral=True,
+                    )
+                    return
+
+                self.picks[side] = choice_key
+                choice_info = RPS_CHOICES[choice_key]
+
+                if len(self.picks) < 2:
+                    await interaction.response.edit_message(
+                        content=self.format_status_message(),
+                        view=self,
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                    )
+                    await interaction.followup.send(
+                        f"패 선택 완료: **{choice_info['emoji']} {choice_info['label']}** (상대방의 선택을 기다리는 중입니다)",
+                        ephemeral=True,
+                    )
+                    return
+
+                # 둘 다 골랐으면 기존 메시지 지우고 카운트다운 후 결과 출력
+                self.phase = "REVEALING"
+                self.clear_items()
                 await interaction.response.defer()
-                return
-
-            uid = interaction.user.id
-            if self.red_user and uid == self.red_user.id:
-                side = "RED"
-            elif self.blue_user and uid == self.blue_user.id:
-                side = "BLUE"
-            else:
-                await interaction.response.send_message(
-                    "참가 중인 두 선수(RED / BLUE)만 패를 선택할 수 있습니다!",
-                    ephemeral=True,
-                )
-                return
-
-            self.picks[side] = choice_key
-            choice_info = RPS_CHOICES[choice_key]
-
-            if len(self.picks) < 2:
-                await interaction.response.edit_message(
-                    content=self.format_status_message(),
-                    view=self,
-                    allowed_mentions=discord.AllowedMentions(users=True),
-                )
-                await interaction.followup.send(
-                    f"패 선택 완료: **{choice_info['emoji']} {choice_info['label']}** (상대방의 선택을 기다리는 중입니다)",
-                    ephemeral=True,
-                )
-                return
-
-            # 둘 다 골랐으면 기존 메시지 지우고 카운트다운 후 결과 출력
-            self.phase = "REVEALING"
-            self.clear_items()
-            await interaction.response.defer()
 
             if interaction.message is not None:
                 try:

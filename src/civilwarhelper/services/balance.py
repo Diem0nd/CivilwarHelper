@@ -1,7 +1,12 @@
 from itertools import combinations
 
 from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, VAL_STANDARD_POSITIONS
-from civilwarhelper.config.tiers import DIVISION_BONUS, TIER_BASE_SCORE
+from civilwarhelper.config.tiers import (
+    DIVISION_BONUS,
+    LOL_TIER_BASE_SCORE,
+    TIER_BASE_SCORE,
+    VAL_TIER_BASE_SCORE,
+)
 from civilwarhelper.ui.emojis import get_tier_emoji
 
 
@@ -263,20 +268,23 @@ def assign_teams_with_balance(
 
 
 def _extract_player_tier_and_score(p: dict | None, game: str = "lol") -> tuple[str, float]:
+    tier_score_map = VAL_TIER_BASE_SCORE if str(game).lower() == "valorant" else LOL_TIER_BASE_SCORE
+    unranked_score = tier_score_map.get("UNRANKED", 12.0)
+
     if not p:
-        return f"{get_tier_emoji(game, 'UNRANKED')} Unranked", 10.0
+        return f"{get_tier_emoji(game, 'UNRANKED')} Unranked", unranked_score
 
     pre_score = p.get("mmr_score") or p.get("balance_score") or p.get("tier_score")
 
     def parse_tier(raw: str | None) -> tuple[str, float]:
         if not raw or not str(raw).strip():
-            return "Unranked", 10.0
+            return "Unranked", unranked_score
         text = str(raw).strip()
         parts = text.upper().split()
         base = parts[0]
-        if base not in TIER_BASE_SCORE or base == "UNRANKED":
-            return "Unranked", 10.0
-        score = TIER_BASE_SCORE[base] + (DIVISION_BONUS.get(parts[1], 0.0) if len(parts) >= 2 else 0.0)
+        if base not in tier_score_map or base == "UNRANKED":
+            return "Unranked", unranked_score
+        score = tier_score_map[base] + (DIVISION_BONUS.get(parts[1], 0.0) if len(parts) >= 2 else 0.0)
         return text, score
 
     custom_raw = (p.get("custom_tier") or "").strip()
@@ -300,10 +308,9 @@ def _extract_player_tier_and_score(p: dict | None, game: str = "lol") -> tuple[s
         if solo_text != "Unranked" and (solo_score >= flex_score or flex_text == "Unranked"):
             tier_text, calc_score = solo_text, solo_score
         elif flex_text != "Unranked":
-            tier_text, flex_score = flex_text, flex_score
-            calc_score = flex_score
+            tier_text, calc_score = flex_text, flex_score
         else:
-            tier_text, calc_score = "Unranked", 10.0
+            tier_text, calc_score = "Unranked", unranked_score
 
     base_upper = tier_text.upper().split()[0] if tier_text else "UNRANKED"
     emoji = get_tier_emoji(game, base_upper)

@@ -3,7 +3,7 @@ import discord
 from civilwarhelper import db as database
 from civilwarhelper.config.positions import LOL_POS_SHORT_MAP, POSITION_SHORT_LABEL
 from civilwarhelper.services.balance import _extract_player_tier_and_score
-from civilwarhelper.ui.emojis import get_tier_emoji
+from civilwarhelper.ui.emojis import get_position_emoji, get_tier_emoji
 
 
 async def send_profile_lines(interaction: discord.Interaction, lines: list[str]):
@@ -37,12 +37,23 @@ async def get_display_nickname(guild: discord.Guild, profile: dict):
 
 
 def _format_short_position(pos_text: str | None, game: str) -> str:
-    if not pos_text or pos_text.strip().upper() in ("NOT RETRIEVED YET", "NONE", "UNKNOWN", ""):
+    if not pos_text or pos_text.strip().upper() in ("NOT RETRIEVED YET", "NONE", "UNKNOWN", "", "미정", "FILL"):
         return "미정"
     cleaned = pos_text.strip()
     if game == "lol":
-        return LOL_POS_SHORT_MAP.get(cleaned.upper(), cleaned.upper())
-    return POSITION_SHORT_LABEL.get(cleaned, cleaned.upper())
+        short_label = LOL_POS_SHORT_MAP.get(cleaned.upper(), cleaned.upper())
+    else:
+        short_label = POSITION_SHORT_LABEL.get(cleaned, cleaned.upper())
+    pos_emoji = get_position_emoji(game, cleaned, fallback="")
+    return f"{pos_emoji} {short_label}".strip()
+
+
+def _format_full_position_with_emoji(pos_text: str | None, game: str) -> str:
+    if not pos_text or pos_text.strip() in ("", "미정", "선택안함"):
+        return pos_text or "미정"
+    cleaned = pos_text.strip()
+    pos_emoji = get_position_emoji(game, cleaned, fallback="")
+    return f"{pos_emoji} {cleaned}".strip()
 
 
 def format_single_member_profile_detail(profile: dict, display_name: str, game: str) -> str:
@@ -90,7 +101,7 @@ def format_compact_member_profile_line(profile: dict, display_name: str, game: s
     main_short = _format_short_position(profile.get("main_position"), game)
     sub_raw = (profile.get("sub_position") or "").strip()
     pos_part = (
-        f"{main_short}/{_format_short_position(sub_raw, game)}"
+        f"{main_short} / {_format_short_position(sub_raw, game)}"
         if sub_raw and sub_raw != "선택안함"
         else main_short
     )
@@ -128,8 +139,8 @@ def format_user_profile_card(profile: dict, can_edit: bool, edit_reason: str) ->
     location = profile.get("server_location") or "Korea"
 
     custom_tier = (profile.get("custom_tier") or "").strip()
-    main_pos = profile.get("main_position") or "미정"
-    sub_pos = profile.get("sub_position") or "선택안함"
+    main_pos = _format_full_position_with_emoji(profile.get("main_position") or "미정", game)
+    sub_pos = _format_full_position_with_emoji(profile.get("sub_position") or "선택안함", game)
 
     effective_tier_display, effective_score = _extract_player_tier_and_score(profile, game)
 

@@ -3,7 +3,8 @@ from civilwarhelper.config.games import draft_rule_name
 from civilwarhelper.config.positions import LOL_STANDARD_POSITIONS, POSITION_SHORT_LABEL, VAL_STANDARD_POSITIONS
 from civilwarhelper.services.balance import _extract_player_tier_and_score, _get_comparison_symbol
 from civilwarhelper.services.team_names import SESSION_CUSTOM_TEAM_NAMES
-from civilwarhelper.ui.emojis import get_custom_emoji
+from civilwarhelper.ui.emojis import get_custom_emoji, get_position_emoji, get_tier_emoji
+from civilwarhelper.services.val_map import get_or_assign_valorant_map
 
 
 def format_fearless_section(
@@ -83,8 +84,13 @@ def format_matchmaking_board(
     lines = [
         f"{playing_emoji} **civilwar #{session_id} 팀 편성 결과** (기준: 왼쪽 = 🟥 **{red_name}** / 오른쪽 = 🟦 **{blue_name}**)",
         f"주최자 : <@{session['organizer_user_id']}>",
-        "",
     ]
+    
+    if game != "lol":
+        current_map = get_or_assign_valorant_map(guild_id, session_id, reroll=False)
+        lines.append(f"🗺️ **이번 세트 배정 맵** : 🎯 **{current_map}**")
+    lines.append("")
+
 
     total_red = 0.0
     total_blue = 0.0
@@ -136,7 +142,9 @@ def format_matchmaking_board(
         red_mention = f"<@{red_p['discord_user_id']}>" if red_p else "미배정"
         blue_mention = f"<@{blue_p['discord_user_id']}>" if blue_p else "미배정"
 
-        lines.append(f"**[{short_pos}]** {red_tier_str} **{lane_sym}** {blue_tier_str}")
+        pos_emoji = get_position_emoji(game, short_pos) if game == "lol" else ""
+        pos_header = f"{pos_emoji} **[{short_pos}]**" if pos_emoji else f"**[{short_pos}]**"
+        lines.append(f"{pos_header} {red_tier_str} **{lane_sym}** {blue_tier_str}")
         lines.append(f"{red_mention} vs {blue_mention}")
 
         if idx < len(matchup_rows) - 1:

@@ -11,7 +11,7 @@ from civilwarhelper.riot import valorant as riot_valorant
 from civilwarhelper.ui.formatting.profile import format_user_profile_card, get_display_nickname
 from civilwarhelper.ui.views.profile_directory import ProfileDirectoryView
 from civilwarhelper.ui.views.profile_manage import RiotIdRegisterModal, UserProfileManageView
-from civilwarhelper.ui.emojis import get_custom_emoji
+from civilwarhelper.ui.emojis import get_custom_emoji, get_position_emoji, get_tier_emoji
 
 
 @app_commands.command(
@@ -79,145 +79,149 @@ async def valprofile(interaction: discord.Interaction):
 
 
 @app_commands.command(
-    name="롤갱신",
-    description="등록된 League of Legends 프로필의 랭크와 주 포지션을 Riot에서 다시 불러옵니다.",
+    name="갱신",
+    description="선택한 멤버의 League of Legends 또는 VALORANT 티어와 주 포지션을 Riot에서 다시 불러옵니다.",
 )
 @app_commands.guild_only()
-async def refreshlol(interaction: discord.Interaction):
+@app_commands.describe(
+    game="갱신할 게임을 선택하세요 (League of Legends 또는 VALORANT)",
+    member="갱신할 디스코드 서버 멤버를 선택하세요",
+)
+@app_commands.choices(
+    game=[
+        app_commands.Choice(name="League of Legends", value="lol"),
+        app_commands.Choice(name="VALORANT", value="valorant"),
+    ],
+)
+async def refresh_profile_command(
+    interaction: discord.Interaction,
+    game: app_commands.Choice[str],
+    member: discord.Member,
+):
     if interaction.guild is None or interaction.guild_id is None:
         await interaction.response.send_message("이 명령어는 디스코드 서버 안에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    profiles = database.get_profiles(guild_id=interaction.guild_id, game="lol")
-    if not profiles:
-        await interaction.response.send_message("등록된 League of Legends 프로필이 없습니다.", ephemeral=True)
-        return
+    selected_game = game.value
+    game_label = "League of Legends" if selected_game == "lol" else "VALORANT"
 
-    await interaction.response.defer(ephemeral=True)
-
-    updated_profiles = []
-    failed_profiles = []
-
-    try:
-        async with aiohttp.ClientSession(
-            headers=riot_api.get_headers(),
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as session:
-            for profile in profiles:
-                try:
-                    api_data = await riot_api.fetch_lol_profile_data(
-                        session=session,
-                        game_name=profile["riot_game_name"],
-                        tagline=profile["riot_tagline"],
-                    )
-                    database.update_profile_api_data(
-                        guild_id=interaction.guild_id,
-                        discord_user_id=profile["discord_user_id"],
-                        game="lol",
-                        puuid=api_data["puuid"],
-                        solo_tier=api_data["solo_tier"],
-                        flex_tier=api_data["flex_tier"],
-                        main_position=api_data["main_position"],
-                    )
-                    updated_profiles.append(profile["discord_nickname"])
-                except (riot_api.RiotAPIError, aiohttp.ClientError, asyncio.TimeoutError) as error:
-                    logging.warning(
-                        "LoL 데이터 조회 실패 (%s#%s): %s: %s",
-                        profile["riot_game_name"],
-                        profile["riot_tagline"],
-                        type(error).__name__,
-                        error,
-                    )
-                    failed_profiles.append(profile["discord_nickname"])
-    except riot_api.RiotAPIError as error:
-        await interaction.followup.send(str(error), ephemeral=True)
-        return
-
-    lines = [
-        f"갱신한 LoL 프로필: {len(updated_profiles)}개",
-        f"실패한 프로필: {len(failed_profiles)}개",
-    ]
-    if failed_profiles:
-        lines.append("")
-        lines.extend(f"- {name}" for name in failed_profiles)
-
-    await interaction.followup.send(
-        "\n".join(lines),
-        ephemeral=True,
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
-
-
-@app_commands.command(
-    name="발로갱신",
-    description="등록된 VALORANT 프로필의 경쟁전 티어와 주 역할을 Riot에서 다시 불러옵니다.",
-)
-@app_commands.guild_only()
-async def refreshval(interaction: discord.Interaction):
-    if interaction.guild is None or interaction.guild_id is None:
-        await interaction.response.send_message("이 명령어는 디스코드 서버 안에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    profiles = database.get_profiles(guild_id=interaction.guild_id, game="valorant")
-    if not profiles:
-        await interaction.response.send_message("등록된 VALORANT 프로필이 없습니다.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    updated_profiles = []
-    failed_profiles = []
-
-    try:
-        async with aiohttp.ClientSession(
-            headers=riot_api.get_headers(riot_valorant.VAL_API_KEY_ENV),
-            timeout=aiohttp.ClientTimeout(total=60),
-        ) as session:
-            for profile in profiles:
-                try:
-                    api_data = await riot_valorant.fetch_val_profile_data(
-                        session=session,
-                        game_name=profile["riot_game_name"],
-                        tagline=profile["riot_tagline"],
-                    )
-                    database.update_profile_api_data(
-                        guild_id=interaction.guild_id,
-                        discord_user_id=profile["discord_user_id"],
-                        game="valorant",
-                        puuid=api_data["puuid"],
-                        competitive_tier=api_data["competitive_tier"],
-                        main_position=api_data["main_position"],
-                    )
-                    updated_profiles.append(profile["discord_nickname"])
-                except (riot_api.RiotAPIError, aiohttp.ClientError, asyncio.TimeoutError) as error:
-                    logging.warning(
-                        "VALORANT 데이터 조회 실패 (%s#%s): %s: %s",
-                        profile["riot_game_name"],
-                        profile["riot_tagline"],
-                        type(error).__name__,
-                        error,
-                    )
-                    failed_profiles.append(profile["discord_nickname"])
-    except riot_api.RiotAPIError:
-        await interaction.followup.send(
-            f"{get_custom_emoji('ALose', '🚫')} 발로란트 API 키(`RIOT_VAL_API_KEY`)가 설정되지 않았습니다. 봇 관리자에게 문의해 주세요.",
+    profile = database.get_user_profile(interaction.guild_id, member.id, selected_game)
+    if profile is None:
+        await interaction.response.send_message(
+            f"{get_custom_emoji('ALose', '❌')} **{member.display_name}**님은 아직 **{game_label}** 프로필이 등록되어 있지 않습니다.\n"
+            "먼저 `/등록` 명령어로 프로필을 등록해 주세요.",
             ephemeral=True,
         )
         return
 
-    lines = [
-        f"{get_custom_emoji('ACharting', '✅')} 갱신한 VALORANT 프로필: {len(updated_profiles)}개",
-        f"{get_custom_emoji('ALose', '🚫')} 실패한 프로필: {len(failed_profiles)}개",
-    ]
-    if failed_profiles:
-        lines.append("")
-        lines.extend(f"- {name}" for name in failed_profiles)
+    await interaction.response.defer(ephemeral=True)
 
-    await interaction.followup.send(
-        "\n".join(lines),
-        ephemeral=True,
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
+    riot_name = profile["riot_game_name"]
+    riot_tag = profile["riot_tagline"]
+
+    if selected_game == "lol":
+        try:
+            async with aiohttp.ClientSession(
+                headers=riot_api.get_headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as session:
+                api_data = await riot_api.fetch_lol_profile_data(
+                    session=session,
+                    game_name=riot_name,
+                    tagline=riot_tag,
+                )
+            database.update_profile_api_data(
+                guild_id=interaction.guild_id,
+                discord_user_id=member.id,
+                game="lol",
+                puuid=api_data["puuid"],
+                solo_tier=api_data["solo_tier"],
+                flex_tier=api_data["flex_tier"],
+                main_position=api_data["main_position"],
+            )
+            solo_tier = api_data["solo_tier"]
+            flex_tier = api_data["flex_tier"]
+            solo_em = get_tier_emoji("lol", solo_tier.split()[0].upper() if solo_tier else "UNRANKED")
+            flex_em = get_tier_emoji("lol", flex_tier.split()[0].upper() if flex_tier else "UNRANKED")
+            main_pos = api_data["main_position"]
+            pos_em = get_position_emoji("lol", main_pos)
+            pos_str = f"{pos_em} `{main_pos}`".strip()
+
+            await interaction.followup.send(
+                f"{get_custom_emoji('ACharting', '✅')} **{member.display_name}** (`{riot_name} #{riot_tag}`) 님의 **League of Legends** 프로필이 갱신되었습니다!\n"
+                f"• **Solo**: {solo_em} `{solo_tier}` / **Flex**: {flex_em} `{flex_tier}` / **주 포지션**: {pos_str}",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (riot_api.RiotAPIError, aiohttp.ClientError, asyncio.TimeoutError) as error:
+            logging.warning(
+                "LoL 데이터 조회 실패 (%s#%s): %s: %s",
+                riot_name,
+                riot_tag,
+                type(error).__name__,
+                error,
+            )
+            await interaction.followup.send(
+                f"{get_custom_emoji('ALose', '⚠️')} **{member.display_name}** (`{riot_name} #{riot_tag}`) LoL 데이터 조회 실패:\n`{error}`",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+    else:
+        try:
+            async with aiohttp.ClientSession(
+                headers=riot_api.get_headers(riot_valorant.VAL_API_KEY_ENV),
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as session:
+                api_data = await riot_valorant.fetch_val_profile_data(
+                    session=session,
+                    game_name=riot_name,
+                    tagline=riot_tag,
+                )
+            database.update_profile_api_data(
+                guild_id=interaction.guild_id,
+                discord_user_id=member.id,
+                game="valorant",
+                puuid=api_data["puuid"],
+                competitive_tier=api_data["competitive_tier"],
+                main_position=api_data["main_position"],
+            )
+            comp_tier = api_data["competitive_tier"]
+            comp_em = get_tier_emoji("valorant", comp_tier.split()[0].upper() if comp_tier else "UNRANKED")
+            main_pos = api_data["main_position"]
+            pos_em = get_position_emoji("valorant", main_pos)
+            pos_str = f"{pos_em} `{main_pos}`".strip()
+
+            await interaction.followup.send(
+                f"{get_custom_emoji('ACharting', '✅')} **{member.display_name}** (`{riot_name} #{riot_tag}`) 님의 **VALORANT** 프로필이 갱신되었습니다!\n"
+                f"• **경쟁전 티어**: {comp_em} `{comp_tier}` / **주 역할**: {pos_str}",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except riot_api.RiotAPIError as error:
+            if error.status_code is None:
+                await interaction.followup.send(
+                    f"{get_custom_emoji('ALose', '🚫')} 발로란트 API 키(`RIOT_VAL_API_KEY`)가 설정되지 않았습니다. 봇 관리자에게 문의해 주세요.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"{get_custom_emoji('ALose', '⚠️')} **{member.display_name}** (`{riot_name} #{riot_tag}`) VALORANT 데이터 조회 실패:\n`{error}`",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            logging.warning(
+                "VALORANT 데이터 조회 실패 (%s#%s): %s: %s",
+                riot_name,
+                riot_tag,
+                type(error).__name__,
+                error,
+            )
+            await interaction.followup.send(
+                f"{get_custom_emoji('ALose', '⚠️')} **{member.display_name}** (`{riot_name} #{riot_tag}`) VALORANT 데이터 조회 실패:\n`{error}`",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
 
 @app_commands.command(
@@ -342,7 +346,6 @@ def setup(tree: app_commands.CommandTree) -> None:
     tree.add_command(register)
     tree.add_command(lolprofile)
     tree.add_command(valprofile)
-    tree.add_command(refreshlol)
-    tree.add_command(refreshval)
+    tree.add_command(refresh_profile_command)
     tree.add_command(unregister_command)
     tree.add_command(userprofile_command)

@@ -8,7 +8,8 @@ from civilwarhelper.services.team_names import SESSION_CUSTOM_TEAM_NAMES
 from civilwarhelper.ui.formatting.board import format_matchmaking_board
 from civilwarhelper.ui.formatting.inhouse import format_inhouse_session_detail
 from civilwarhelper.ui.formatting.profile import _format_short_position
-from civilwarhelper.ui.emojis import get_custom_emoji
+from civilwarhelper.ui.emojis import get_button_emoji, get_custom_emoji, get_position_button_emoji
+from civilwarhelper.services.val_map import SESSION_VALORANT_MAP, get_or_assign_valorant_map
 
 
 class BalancePositionSelect(discord.ui.Select):
@@ -18,6 +19,7 @@ class BalancePositionSelect(discord.ui.Select):
                 label=f"포지션 선택: {pos}",
                 value=pos,
                 default=(pos == selected_pos),
+                emoji=get_position_button_emoji("lol", pos),
             )
             for pos in positions
         ]
@@ -151,11 +153,13 @@ class FreeParticipantSwapSelect(discord.ui.Select):
 
 
 class QuickLaneSwapButton(discord.ui.Button):
-    def __init__(self, position_name: str):
-        self.position_name = position_name
-        short_label = POSITION_SHORT_LABEL.get(position_name, _format_short_position(position_name, "lol"))
+    def __init__(self, position: str):
+        self.position = position
+        short_label = POSITION_SHORT_LABEL.get(position, position.upper())
+        pos_emoji = get_position_button_emoji("lol", position, fallback="🔁")
         super().__init__(
-            label=f"🔄 {short_label} 스왑",
+            label=f"{short_label} 스왑",
+            emoji=pos_emoji,
             style=discord.ButtonStyle.secondary,
             row=2,
         )
@@ -187,6 +191,28 @@ class QuickLaneSwapButton(discord.ui.Button):
             view=view,
             allowed_mentions=discord.AllowedMentions(users=True),
         )
+
+class ValorantRandomMapButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="🗺️ 랜덤 맵 다시 추첨",
+            style=discord.ButtonStyle.primary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: InhouseTeamManageView = self.view  # type: ignore
+        if interaction.user.id != view.organizer_user_id:
+            await interaction.response.send_message("이 내전의 주최자만 맵을 추첨할 수 있습니다.", ephemeral=True)
+            return
+
+        new_map = get_or_assign_valorant_map(view.guild_id, view.session_id, reroll=True)
+        await interaction.response.edit_message(
+            content=format_matchmaking_board(view.session, view.participants, view.balance_settings),
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        await interaction.followup.send(f"🗺️ **새로운 발로란트 맵이 추첨되었습니다!** 👉 🎯 **{new_map}**")
 
 
 class RecordMatchResultButton(discord.ui.Button):
@@ -252,19 +278,23 @@ class UndoFinishInhouseView(discord.ui.View):
         self.message = message
 
     @discord.ui.button(
-        label="↩️ 내전 종료 취소 (진행 화면으로 복구 - 10분 내 가능)",
-        style=discord.ButtonStyle.secondary,
+        label="↩️ 내전 종료 취소 (내전 진행으로 돌아가기)",
+        style=discord.ButtonStyle.success,
         row=0,
     )
     async def undo_finish_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        session = database.get_inhouse_session_by_id(self.manage_view.guild_id, self.manage_view.session_id)
-        organizer_id = session["organizer_user_id"] if session else self.manage_view.organizer_user_id
+        session = database.get_inhouse_session_by_id(
+            self.manage_view.guild_id, self.manage_view.session_id
+        )
+        organizer_id = (
+            session["organizer_user_id"]
+            if session
+            else self.manage_view.organizer_user_id
+        )
 
-        is_organizer = interaction.user.id == organizer_id
-        is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
-        if not (is_organizer or is_admin):
+        if interaction.user.id != organizer_id:
             await interaction.response.send_message(
-                "내전 종료 취소는 주최자(또는 서버 관리자)만 할 수 있습니다.",
+                "이 내전의 주최자만 종료를 취소할 수 있습니다.",
                 ephemeral=True,
             )
             return
@@ -274,7 +304,8 @@ class UndoFinishInhouseView(discord.ui.View):
                 "이미 완전히 종료되어 복구할 수 없는 내전입니다.",
                 ephemeral=True,
             )
-            await interaction.message.edit(view=None)
+            if interaction.message:
+                await interaction.message.edit(view=None)
             self.stop()
             return
 
@@ -304,6 +335,7 @@ class UndoFinishInhouseView(discord.ui.View):
         # 10분이 경과하면 DB에서 세션을 최종 삭제하고 메시지에서 버튼을 제거합니다.
         database.delete_inhouse_session(self.manage_view.guild_id, self.manage_view.session_id)
         SESSION_CUSTOM_TEAM_NAMES.pop((self.manage_view.guild_id, self.manage_view.session_id), None)
+        SESSION_VALORANT_MAP.pop((self.manage_view.guild_id, self.manage_view.session_id), None)
         if self.message is not None:
             try:
                 await self.message.edit(view=None)
@@ -313,15 +345,17 @@ class UndoFinishInhouseView(discord.ui.View):
 
 class FinishInhouseMatchButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="🛑 내전 종료", style=discord.ButtonStyle.danger, row=0)
+        super().__init__(
+            label="🏁 내전 최종 종료",
+            style=discord.ButtonStyle.danger,
+            row=4,
+        )
 
     async def callback(self, interaction: discord.Interaction):
         view: InhouseTeamManageView = self.view  # type: ignore
-        is_organizer = interaction.user.id == view.organizer_user_id
-        is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
-        if not (is_organizer or is_admin):
+        if interaction.user.id != view.organizer_user_id:
             await interaction.response.send_message(
-                "내전 종료는 주최자(또는 서버 관리자)만 할 수 있습니다.",
+                "이 내전의 주최자만 내전을 종료할 수 있습니다.",
                 ephemeral=True,
             )
             return
@@ -466,10 +500,12 @@ class InhouseTeamManageView(discord.ui.View):
             _add(UndoLastSetResultButton(max(done_sets)), 1)
         _add(SwapWholeTeamSideButton(), 1)
 
-        # row 2: 라인별 1:1 스왑
+        # row 2: 롤은 라인별 1:1 스왑 / 발로란트는 랜덤 맵 추첨 버튼
         if game == "lol":
             for pos in self.positions:
                 _add(QuickLaneSwapButton(pos), 2)
+        else:
+            _add(ValorantRandomMapButton(), 2)
 
         # row 3: 2명 자유 스왑
         if len(self.participants) >= 2:
